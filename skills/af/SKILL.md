@@ -65,6 +65,8 @@ After implementation, run `code-review` against `base_sha...HEAD`. Collect findi
 
 Reviewer selection prefers a different company when the role has any configured candidate from another company. Same-company review is allowed only when every candidate for that role has the writer's company. If all independent candidates stop for quota, dispatch returns `waiting_for_quota` and exits 75; wait `retry_after_minutes` and retry. A missing `pi` or `codex` CLI is skipped; `host` candidates are always available.
 
+`host` candidates mean the current host starts its own fresh subagent, so when the host differs from the one the config's `host` models belong to (for example, Pi or Codex with Claude models), use a config whose `host` entries match that host, or list `pi`/`codex` reviewer candidates instead.
+
 ```sh
 af select --repo /path/to/repository-<id> --flow-id <id> --role small_review --writer-company <writer-company>
 af dispatch --worktree /path/to/repository-<id> --flow-id <id> --role small_review --writer-company <writer-company> --prompt "Review the flow changes."

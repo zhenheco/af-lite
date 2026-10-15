@@ -137,13 +137,16 @@ class SelectCommandTests(unittest.TestCase):
     def test_select_uses_the_flow_recorded_config(self):
         self.write_exe("codex")
         recorded = self.config("recorded.json", {"writer": [self.candidate("codex", "OpenAI", "recorded")]})
-        started = self.run_af("state", "start", "--repo", self.repo, "--flow-id", "select-config",
-                              "--base-sha", git(self.repo, "rev-parse", "HEAD"),
+        created = self.run_af("worktree", "create", "--repo", self.repo, "--flow-id", "select-config")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        worktree = Path(json.loads(created.stdout)["path"])
+        started = self.run_af("state", "start", "--repo", worktree, "--flow-id", "select-config",
+                              "--base-sha", git(worktree, "rev-parse", "HEAD"),
                               "--config", recorded, "--chain", "tdd")
         self.assertEqual(started.returncode, 0, started.stderr)
         (self.base / "af.config.json").write_text(json.dumps({
             "roles": {"writer": [self.candidate("codex", "OpenAI", "wrong-cwd")]}}))
-        result = self.run_af("select", "--repo", self.repo, "--flow-id", "select-config",
+        result = self.run_af("select", "--repo", worktree, "--flow-id", "select-config",
                              "--role", "writer", cwd=self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["selected"]["profile"], "recorded")

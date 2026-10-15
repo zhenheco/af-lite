@@ -9,6 +9,7 @@ Workers are trusted but fallible: they are the owner's coding agents working in 
 ## Flow and worktree
 
 - Each flow has a validated ID and an ordered chain of skill steps. State is one JSON record per flow under `<git-common-dir>/.af/flows/`; each record stores the resolved config path.
+- `state start` requires the flow worktree top level on branch `af/<id>` and refuses to create a record otherwise.
 - A running step cannot be advanced or resumed by a second runner until `stale_after_minutes` elapses. `advance` claims the next step, `complete` records its result and moves forward, `resume` releases stale claims, `stop` ends a flow, and `add-steps` inserts pending steps after a named step.
 - `worktree create` makes a sibling worktree on branch `af/<id>` without modifying the primary checkout. `remove` refuses tracked changes, untracked non-ignored files, and branches not merged into the base recorded at creation unless `--force` is supplied.
 - Config resolution is `--config`, `$AF_CONFIG`, the primary checkout's `af.config.json`, then `~/.config/af/af.config.json`. Any resolved config path inside a linked worktree on an `af/*` branch is refused. Flow commands use the recorded path.

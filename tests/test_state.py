@@ -41,16 +41,40 @@ class StateCommandTests(unittest.TestCase):
         return subprocess.run([str(ROOT / "bin" / "af"), *args], env=self.env,
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    def create_worktree(self, flow_id):
+        result = self.run_af("worktree", "create", "--repo", str(self.repo), "--flow-id", flow_id)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return Path(json.loads(result.stdout)["path"])
+
     def start(self):
-        result = self.run_af("state", "start", "--repo", str(self.repo),
+        self.worktree = self.create_worktree("state-001")
+        result = self.run_af("state", "start", "--repo", str(self.worktree),
                              "--flow-id", "state-001", "--base-sha", git(self.repo, "rev-parse", "HEAD"),
                              "--chain", "grill-with-docs", "to-spec")
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def test_start_refuses_primary_checkout_without_creating_a_flow_record(self):
+        result = self.run_af("state", "start", "--repo", str(self.repo),
+                             "--flow-id", "state-001", "--base-sha", git(self.repo, "rev-parse", "HEAD"),
+                             "--chain", "tdd")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pass the worktree path returned by af worktree create", result.stderr)
+        common_dir = Path(git(self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        state_path = common_dir / ".af" / "flows" / "state-001.json"
+        self.assertFalse(state_path.exists())
+
+        git(self.repo, "checkout", "-qb", "af/state-001")
+        matching_branch = self.run_af("state", "start", "--repo", str(self.repo),
+                                      "--flow-id", "state-001", "--base-sha", git(self.repo, "rev-parse", "HEAD"),
+                                      "--chain", "tdd")
+        self.assertNotEqual(matching_branch.returncode, 0)
+        self.assertFalse(state_path.exists())
+
     def test_record_lives_in_common_git_dir_and_resumes_after_completed_step(self):
         record = self.start()
         state_path = Path(record["state_path"])
+        self.assertEqual(json.loads(state_path.read_text())["worktree_path"], str(self.worktree.resolve()))
         status = self.run_af("state", "status", "--repo", self.repo, "--flow-id", "state-001")
         self.assertEqual(json.loads(status.stdout)["flow_id"], "state-001")
         missing_id = self.run_af("state", "status", "--repo", self.repo)
@@ -124,7 +148,8 @@ class StateCommandTests(unittest.TestCase):
 
     def test_start_records_the_flow_base_commit(self):
         base_sha = git(self.repo, "rev-parse", "HEAD")
-        result = self.run_af("state", "start", "--repo", str(self.repo), "--flow-id", "state-base",
+        worktree = self.create_worktree("state-base")
+        result = self.run_af("state", "start", "--repo", str(worktree), "--flow-id", "state-base",
                              "--base-sha", base_sha,
                              "--chain", "tdd")
         self.assertEqual(result.returncode, 0, result.stderr)

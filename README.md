@@ -80,6 +80,8 @@ Unknown config fields are rejected. These are exactly the supported fields:
 | `record_retention.archive_dir` | Archive root; relative paths resolve under `<git-common-dir>/.af/`; `null` disables archival. |
 | `record_retention.delete_after_days` | Age before eligible records and logs are deleted; default: `180`; `null` disables deletion. |
 
+`host` candidates mean the current host starts its own fresh subagent, so when the host differs from the one the config's `host` models belong to (for example, Pi or Codex with Claude models), use a config whose `host` entries match that host, or list `pi`/`codex` reviewer candidates instead.
+
 Run `bash tests/run.sh` for the offline suite.
 
 ## Credits and license

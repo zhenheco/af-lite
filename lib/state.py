@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from config import load_config
-from worktree import common_dir, git_output, validate_flow_id
+from worktree import common_dir, git_output, repository_root, validate_flow_id
 
 def flow_records_directory(repo):
     return common_dir(repo) / ".af" / "flows"
@@ -70,14 +70,19 @@ def add_state_parser(commands):
 
 def start_flow(args):
     _, config_path = load_config(args.config, cwd=args.repo)
-    path = state_path(args.repo, args.flow_id)
+    root = repository_root(args.repo)
+    path = state_path(root, args.flow_id)
+    if (root != Path(args.repo).resolve()
+            or Path(git_output(root, "rev-parse", "--absolute-git-dir")).resolve() == common_dir(root)
+            or git_output(root, "branch", "--show-current") != f"af/{args.flow_id}"):
+        raise RuntimeError(f"state start requires the af/{args.flow_id} worktree; pass the worktree path returned by af worktree create")
     with locked(path):
         if path.exists():
             raise RuntimeError(f"flow already exists: {args.flow_id}")
         base = git_output(args.repo, "rev-parse", "--verify", f"{args.base_sha}^{{commit}}")
         timestamp = now()
         data = {"flow_id": args.flow_id, "base_sha": base, "config_path": str(config_path),
-                "worktree_path": str(Path(args.repo).resolve()), "updated_at": timestamp,
+                "worktree_path": str(root), "updated_at": timestamp,
                 "status": "active", "current_step": 0,
                 "steps": [step_record(name) for name in args.chain]}
         write_record(path, data)
