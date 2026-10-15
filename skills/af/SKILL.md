@@ -90,4 +90,4 @@ af worktree remove --repo /path/to/repository --flow-id <id>
 af cleanup --repo /path/to/repository
 ```
 
-Worktree removal refuses dirty trees and commits not merged into the recorded base; use `--force` only after reviewing the work. Cleanup archives or deletes only completed or stopped records and their logs according to `record_retention`.
+Worktree removal refuses tracked changes, untracked non-ignored files, and commits not merged into the recorded base; use `--force` only after reviewing the work. Cleanup archives or deletes only completed or stopped records and their logs according to `record_retention`.

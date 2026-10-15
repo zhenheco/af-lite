@@ -289,6 +289,30 @@ class GateCommandTests(unittest.TestCase):
             self.assertEqual(git(worktree, "diff", "--cached", "--binary"), original_index, name)
             (worktree / name).unlink()
 
+    def test_commit_refuses_symlink_escape_through_an_intermediate_symlink(self):
+        worktree = self.create_flow("gate-intermediate-escape")
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "file").write_text("outside\n")
+        (worktree / "inner").symlink_to("../outside")
+        outer = worktree / "outer"
+        outer.symlink_to("inner/file")
+        target = Path(os.readlink(outer))
+        self.assertFalse(target.is_absolute())
+        self.assertNotIn("..", target.parts)
+        (worktree / "preserved.txt").write_text("already staged\n")
+        git(worktree, "add", "preserved.txt")
+        original_index = git(worktree, "diff", "--cached", "--binary")
+        before = git(worktree, "rev-parse", "HEAD")
+
+        result = self.run_af("gate", "commit", "--repo", str(worktree), "--flow-id", "gate-intermediate-escape",
+                             "--message", "refuse nested symlink escape", "--paths", "outer")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink target escapes the worktree", result.stderr.lower())
+        self.assertEqual(git(worktree, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(worktree, "diff", "--cached", "--binary"), original_index)
+
     def test_commit_ignores_a_preexisting_token_on_an_unchanged_line(self):
         self.disable_gitleaks()
         token = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"

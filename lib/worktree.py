@@ -72,9 +72,9 @@ def remove(repo_arg, flow_id, force=False):
     if not entry or entry.get("branch") != f"refs/heads/{branch}":
         raise RuntimeError(f"flow worktree not found on {branch}: {target}")
 
-    dirty = git(target, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching").stdout
+    dirty = git(target, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
     if dirty and not force:
-        raise RuntimeError("refusing to remove a dirty flow worktree; review it or use --force")
+        raise RuntimeError("refusing to remove a flow worktree with tracked changes or untracked non-ignored files; review it or use --force")
     if not force:
         base = git(repo, "rev-parse", "--verify", f"{branch}@{{upstream}}", check=False)
         if base.returncode:

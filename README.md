@@ -33,7 +33,31 @@ Configured worker candidates are tried in order; missing `pi` and `codex` CLIs a
 
 `gate commit` requires branch `af/<flow-id>`, accepts explicit changed paths only, rejects absolute paths, `..` path components, absolute symlink targets, and symlinks that resolve outside the worktree, then scans staged changes with `gitleaks protect --staged` or a secret-pattern scan of added lines. Relative symlink targets may contain `..` when they resolve inside the worktree. It restores the prior index if a check refuses the commit. `gate decide` requires passing tests and reviews, a clean worktree, and no high-risk paths; otherwise it blocks or returns `ask`. High-risk matches use Git ignore patterns and check committed changes from the recorded base through the flow branch.
 
-Worktree removal refuses dirty trees and branches not merged into their recorded base; `--force` overrides both checks. Cleanup archives or deletes only completed or stopped flow records and their logs after the configured ages.
+Worktree removal refuses tracked changes, untracked non-ignored files, and branches not merged into their recorded base; `--force` overrides both checks. Cleanup archives or deletes only completed or stopped flow records and their logs after the configured ages.
+
+### Scheduled cleanup
+
+Schedulers do not start in the repository, so pass `--repo` and `--config` explicitly. For cron:
+
+```cron
+17 3 * * * /path/to/af-lite/bin/af cleanup --repo /path/to/repository --config /path/to/repository/af.config.json
+```
+
+For launchd, add these keys to a LaunchAgent plist:
+
+```xml
+<key>ProgramArguments</key>
+<array>
+  <string>/path/to/af-lite/bin/af</string>
+  <string>cleanup</string>
+  <string>--repo</string>
+  <string>/path/to/repository</string>
+  <string>--config</string>
+  <string>/path/to/repository/af.config.json</string>
+</array>
+<key>StartCalendarInterval</key>
+<dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>17</integer></dict>
+```
 
 ## Configuration
 

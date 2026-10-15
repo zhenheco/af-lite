@@ -75,5 +75,45 @@ class WorktreeCommandTests(unittest.TestCase):
         self.assertFalse(worktree.exists())
         self.assertEqual(git(self.repo, "branch", "--list", f"af/{flow_id}"), "")
 
+    def test_remove_ignores_gitignored_files_after_flow_branch_is_merged(self):
+        flow_id = "ignored-build"
+        created = self.run_af("worktree", "create", "--repo", str(self.repo),
+                              "--flow-id", flow_id)
+        worktree = Path(json.loads(created.stdout)["path"])
+        (worktree / ".gitignore").write_text("ignored-output/\n")
+        git(worktree, "add", ".gitignore")
+        git(worktree, "commit", "-qm", "ignore generated output")
+        git(self.repo, "merge", "--ff-only", f"af/{flow_id}")
+        output = worktree / "ignored-output" / "bundle.js"
+        output.parent.mkdir()
+        output.write_text("generated\n")
+
+        removed = self.run_af("worktree", "remove", "--repo", str(self.repo), "--flow-id", flow_id)
+
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse(worktree.exists())
+        self.assertEqual(git(self.repo, "branch", "--list", f"af/{flow_id}"), "")
+
+    def test_remove_refuses_tracked_changes_and_untracked_nonignored_files(self):
+        flow_id = "dirty-flow"
+        created = self.run_af("worktree", "create", "--repo", str(self.repo),
+                              "--flow-id", flow_id)
+        worktree = Path(json.loads(created.stdout)["path"])
+        (worktree / "README.md").write_text("modified\n")
+
+        tracked = self.run_af("worktree", "remove", "--repo", str(self.repo), "--flow-id", flow_id)
+
+        self.assertNotEqual(tracked.returncode, 0)
+        self.assertIn("tracked changes", tracked.stderr)
+        self.assertTrue(worktree.exists())
+        (worktree / "README.md").write_text("fixture\n")
+        (worktree / "untracked.txt").write_text("untracked\n")
+
+        untracked = self.run_af("worktree", "remove", "--repo", str(self.repo), "--flow-id", flow_id)
+
+        self.assertNotEqual(untracked.returncode, 0)
+        self.assertIn("untracked non-ignored files", untracked.stderr)
+        self.assertTrue(worktree.exists())
+
 if __name__ == "__main__":
     unittest.main()
