@@ -54,6 +54,31 @@ class StateCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def flow_record_path(self, flow_id):
+        common_dir = Path(git(self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        return common_dir / ".af" / "flows" / f"{flow_id}.json"
+
+    def test_start_refuses_linked_worktree_on_a_different_flow_branch(self):
+        other = self.create_worktree("state-002")
+        self.assertEqual(git(other, "branch", "--show-current"), "af/state-002")
+        result = self.run_af("state", "start", "--repo", str(other),
+                             "--flow-id", "state-001", "--base-sha", git(self.repo, "rev-parse", "HEAD"),
+                             "--chain", "tdd")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pass the worktree path returned by af worktree create", result.stderr)
+        self.assertFalse(self.flow_record_path("state-001").exists())
+
+    def test_start_refuses_subdirectory_of_the_flow_worktree(self):
+        worktree = self.create_worktree("state-001")
+        subdirectory = worktree / "nested"
+        subdirectory.mkdir()
+        result = self.run_af("state", "start", "--repo", str(subdirectory),
+                             "--flow-id", "state-001", "--base-sha", git(self.repo, "rev-parse", "HEAD"),
+                             "--chain", "tdd")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pass the worktree path returned by af worktree create", result.stderr)
+        self.assertFalse(self.flow_record_path("state-001").exists())
+
     def test_start_refuses_primary_checkout_without_creating_a_flow_record(self):
         result = self.run_af("state", "start", "--repo", str(self.repo),
                              "--flow-id", "state-001", "--base-sha", git(self.repo, "rev-parse", "HEAD"),
