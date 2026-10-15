@@ -1,5 +1,6 @@
 """Run workers with logged output and quota-only safe failover."""
 
+import argparse
 from datetime import datetime, timezone
 import json
 import os
@@ -96,14 +97,29 @@ def normalize_worker_commits(worktree, start, current):
 
 def add_dispatch_parser(commands):
     parser = commands.add_parser("dispatch", help="run one configured worker")
-    parser.add_argument("--worktree", required=True)
+    parser.add_argument("--worktree")
+    parser.add_argument("--repo")
+    parser.add_argument("--config", help=argparse.SUPPRESS)
     parser.add_argument("--flow-id", required=True)
     parser.add_argument("--role", required=True)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--writer-company")
 
 def run_dispatch(args):
-    worktree = validate_worktree(args.worktree, args.flow_id)
+    if args.config is not None:
+        raise RuntimeError("dispatch does not accept --config; it uses the config recorded by `af state start` for this flow")
+    if args.worktree is not None and args.repo is not None:
+        if Path(args.worktree).resolve() != Path(args.repo).resolve():
+            raise RuntimeError(f"dispatch got both --worktree and --repo with different values ({args.worktree} vs {args.repo}); pass only one")
+        worktree_arg = args.worktree
+    elif args.worktree is not None:
+        worktree_arg = args.worktree
+    elif args.repo is not None:
+        worktree_arg = args.repo
+    else:
+        raise RuntimeError("dispatch requires --worktree (or its alias --repo)")
+
+    worktree = validate_worktree(worktree_arg, args.flow_id)
     record = read_record(state_path(worktree, args.flow_id))
     config_path = record.get("config_path")
     if not config_path: raise RuntimeError(f"flow {args.flow_id} has no recorded config path")

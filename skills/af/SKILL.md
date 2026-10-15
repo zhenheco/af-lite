@@ -43,6 +43,8 @@ af dispatch --worktree /path/to/repository-<id> --flow-id <id> --role writer --p
 
 Dispatch passes a fixed writer or read-only reviewer role preamble and the prompt to the worker on stdin. stdout and stderr are logged under `<git-common-dir>/.af/logs/<id>/`; use the returned log paths to follow output. A timeout kills the process group. Failover occurs only when HEAD and `git status --porcelain=v1 -z --ignored` are unchanged. If a worker creates commits, dispatch soft-resets them to the starting commit and reports their SHAs.
 
+`dispatch` takes `--worktree`, with `--repo` accepted as an alias for consistency with the other commands; passing both with different values is an error. It always uses the config recorded by `state start` and rejects `--config`.
+
 Claude Code adapter: when dispatch returns `via: host`, start a fresh subagent with the selected `model` using the `Agent` tool, set `worktree` as its working directory, and pass the returned `prompt`.
 
 For a ticket flow, insert one step per ticket after `to-tickets`, then run them in order:

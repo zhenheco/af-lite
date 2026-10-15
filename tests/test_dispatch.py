@@ -279,6 +279,92 @@ class DispatchCommandTests(unittest.TestCase):
                              "--prompt", "task")
         self.assertNotEqual(result.returncode, 0)
 
+    def install_marker_worker(self):
+        marker = self.base / "worker-started"
+        script = ("#!/bin/sh\n"
+                  "printf 'started\\n' >> \"$FAKE_WORKER_MARKER\"\n"
+                  "echo worker-ok\n")
+        self.write_exe("pi", script)
+        self.write_exe("codex", script)
+        self.env["FAKE_WORKER_MARKER"] = str(marker)
+        return marker
+
+    def test_repo_alias_runs_worker_with_the_existing_output_shape(self):
+        marker = self.install_marker_worker()
+        legacy = self.dispatch()
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        legacy_record = json.loads(legacy.stdout)
+
+        marker.unlink()
+        aliased = self.run_af("dispatch", "--repo", self.worktree, "--flow-id", "dispatch-001",
+                              "--role", "writer", "--prompt", "implement the fixture")
+        self.assertEqual(aliased.returncode, 0, aliased.stderr)
+        aliased_record = json.loads(aliased.stdout)
+
+        def shape(value):
+            if isinstance(value, dict):
+                return {key: shape(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [shape(item) for item in value]
+            return type(value).__name__
+
+        self.assertEqual(shape(aliased_record), shape(legacy_record))
+        self.assertEqual(marker.read_text(), "started\n")
+        self.assertEqual(Path(aliased_record["attempts"][0]["log_paths"]["stdout"]).read_text(),
+                         "worker-ok\n")
+
+    def test_worktree_and_repo_alias_accept_the_same_path(self):
+        marker = self.install_marker_worker()
+        result = self.run_af("dispatch", "--worktree", self.worktree, "--repo", self.worktree,
+                             "--flow-id", "dispatch-001", "--role", "writer",
+                             "--prompt", "implement the fixture")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(marker.read_text(), "started\n")
+
+    def test_worktree_and_repo_alias_reject_different_paths_before_starting_worker(self):
+        marker = self.install_marker_worker()
+        common = Path(git(self.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        log_dir = common / ".af" / "logs" / "dispatch-001"
+        logs_before = set(log_dir.glob("*.log")) if log_dir.is_dir() else set()
+
+        result = self.run_af("dispatch", "--worktree", self.worktree, "--repo", self.repo,
+                             "--flow-id", "dispatch-001", "--role", "writer",
+                             "--prompt", "implement the fixture")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--worktree", result.stderr)
+        self.assertIn("--repo", result.stderr)
+        self.assertIn(str(self.worktree), result.stderr)
+        self.assertIn(str(self.repo), result.stderr)
+        self.assertIn("pass only one", result.stderr)
+        self.assertFalse(marker.exists())
+        logs_after = set(log_dir.glob("*.log")) if log_dir.is_dir() else set()
+        self.assertEqual(logs_after, logs_before)
+
+    def test_dispatch_requires_worktree_or_repo_without_argparse_usage(self):
+        result = self.run_af("dispatch", "--flow-id", "dispatch-001", "--role", "writer",
+                             "--prompt", "implement the fixture")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("dispatch requires --worktree", result.stderr)
+        self.assertNotIn("usage:", result.stderr.lower())
+
+    def test_dispatch_rejects_config_before_starting_worker(self):
+        marker = self.install_marker_worker()
+        common = Path(git(self.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        log_dir = common / ".af" / "logs" / "dispatch-001"
+        logs_before = set(log_dir.glob("*.log")) if log_dir.is_dir() else set()
+
+        result = self.run_af("dispatch", "--worktree", self.worktree, "--flow-id", "dispatch-001",
+                             "--role", "writer", "--prompt", "implement the fixture",
+                             "--config", self.base / "ignored-config.json")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("state start", result.stderr)
+        self.assertNotIn("unrecognized arguments", result.stderr)
+        self.assertFalse(marker.exists())
+        logs_after = set(log_dir.glob("*.log")) if log_dir.is_dir() else set()
+        self.assertEqual(logs_after, logs_before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ Workers are trusted but fallible: they are the owner's coding agents working in 
 ## Selection and dispatch
 
 - Each role has ordered `pi`, `codex`, or `host` candidates. Candidates with a missing `pi` or `codex` CLI are skipped; a `host` candidate with `model` and `company` is always available.
+- `dispatch` takes `--worktree`, with `--repo` accepted as an alias for consistency with the other commands; passing both with different values is an error. It always uses the config recorded by `state start` and rejects `--config`.
 - `AF_NO_HOST=1` makes `host` candidates unavailable so a non-Claude host, or a host without quota for the configured host model, falls through to the next `pi`/`codex` candidate.
 - Reviewer roles require a known company different from the writer's when the role has any candidate from a different company. Same-company review is allowed only when every configured candidate has the writer's company. If every independent reviewer is quota-exhausted, dispatch emits `waiting_for_quota` and exits 75.
 - A selected `host` candidate starts no process. `dispatch` returns JSON with `via`, `role`, `model`, `company`, `worktree`, the prompt with its `ROLE` or `REVIEWER` preamble, the instruction to start a fresh host subagent, and `attempts`. Quota failover may select a host candidate unless `AF_NO_HOST=1`.
