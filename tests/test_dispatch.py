@@ -28,6 +28,7 @@ class DispatchCommandTests(unittest.TestCase):
         self.env["HOME"] = str(self.home)
         self.env["PATH"] = f"{self.bin}{os.pathsep}{self.env.get('PATH', '')}"
         self.env.pop("AF_CONFIG", None)
+        self.env.pop("AF_NO_HOST", None)
         self.repo = self.base / "project"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
@@ -177,6 +178,21 @@ class DispatchCommandTests(unittest.TestCase):
             "attempts": []})
         common = Path(git(self.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         self.assertFalse((common / ".af" / "logs" / "dispatch-001").exists())
+
+    def test_no_host_dispatch_runs_the_first_cli_candidate(self):
+        self.write_config({"small_review": [
+            {"via": "host", "model": "claude-sonnet", "company": "Anthropic"},
+            {"via": "codex", "profile": "codex-reviewer", "company": "OpenAI"},
+            {"via": "pi", "provider": "moonshot", "model": "kimi-reviewer", "company": "Moonshot"}]})
+        environment = dict(self.env, AF_NO_HOST="1")
+        result = self.run_af("dispatch", "--worktree", self.worktree, "--flow-id", "dispatch-001",
+                             "--role", "small_review", "--writer-company", "DeepSeek",
+                             "--prompt", "review these changes", env=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertNotIn("via", record)
+        self.assertEqual([item["via"] for item in record["attempts"]], ["codex"])
+        self.assertEqual(Path(record["attempts"][0]["log_paths"]["stdout"]).read_text(), "codex-ok\n")
 
     def test_quota_failover_can_select_a_host_candidate(self):
         self.env["FAKE_PI_MODE"] = "quota"

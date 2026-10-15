@@ -1,6 +1,7 @@
 """Select configured workers in order and enforce reviewer independence."""
 
 import json
+import os
 import shutil
 
 from config import load_config
@@ -25,8 +26,10 @@ def choose(role, config, writer_company=None):
                 item["company"].strip().casefold() == writer for item in configured)):
             raise RuntimeError(f"reviewer independence unavailable for role {role}: no known distinct company")
     candidates = independent if reviewer and independent else configured
-    available = [item for item in candidates
-                 if item["via"] == "host" or shutil.which(item["via"])]
+    no_host = os.environ.get("AF_NO_HOST") == "1"
+    available = [item for item in candidates if
+                 (item["via"] != "host" or not no_host) and
+                 (item["via"] == "host" or shutil.which(item["via"]))]
     result = {"role": role, "candidates": available,
               "selected": available[0] if available else None,
               "review": "independent" if independent else "same-company" if reviewer else None}

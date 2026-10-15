@@ -27,6 +27,7 @@ class SelectCommandTests(unittest.TestCase):
         self.env["HOME"] = str(self.home)
         self.env["PATH"] = f"{self.fake_bin}{os.pathsep}{self.env.get('PATH', '')}"
         self.env.pop("AF_CONFIG", None)
+        self.env.pop("AF_NO_HOST", None)
         self.repo = self.base / "project"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
@@ -107,6 +108,84 @@ class SelectCommandTests(unittest.TestCase):
         record = json.loads(result.stdout)
         self.assertEqual(record["review"], "independent")
         self.assertEqual(record["selected"], self.candidate("host", "Anthropic", "claude-reviewer"))
+
+    def test_no_host_selects_codex_after_reviewer_independence(self):
+        self.write_exe("codex")
+        self.write_exe("pi")
+        path = self.config("reviewers.json", {"small_review": [
+            self.candidate("host", "Anthropic", "claude-reviewer"),
+            self.candidate("codex", "OpenAI", "codex-reviewer"),
+            self.candidate("pi", "Moonshot", "kimi-reviewer")]})
+        self.env["AF_NO_HOST"] = "1"
+        result = self.run_af("select", "--role", "small_review", "--writer-company", "DeepSeek",
+                             "--config", path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual(record["review"], "independent")
+        self.assertEqual([item["via"] for item in record["candidates"]], ["codex", "pi"])
+        self.assertEqual(record["selected"]["profile"], "codex-reviewer")
+
+    def test_no_host_applies_to_non_review_roles(self):
+        self.write_exe("codex")
+        self.write_exe("pi")
+        path = self.config("writer.json", {"writer": [
+            self.candidate("host", "Anthropic", "claude-writer"),
+            self.candidate("codex", "OpenAI", "codex-writer"),
+            self.candidate("pi", "Moonshot", "kimi-writer")]})
+        self.env["AF_NO_HOST"] = "1"
+        result = self.run_af("select", "--role", "writer", "--config", path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual([item["via"] for item in record["candidates"]], ["codex", "pi"])
+        self.assertEqual(record["selected"]["profile"], "codex-writer")
+
+    def test_no_host_keeps_only_independent_pi_reviewer(self):
+        self.write_exe("codex")
+        self.write_exe("pi")
+        path = self.config("reviewers.json", {"small_review": [
+            self.candidate("host", "Anthropic", "claude-reviewer"),
+            self.candidate("codex", "OpenAI", "codex-reviewer"),
+            self.candidate("pi", "Moonshot", "kimi-reviewer")]})
+        self.env["AF_NO_HOST"] = "1"
+        result = self.run_af("select", "--role", "small_review", "--writer-company", "OpenAI",
+                             "--config", path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual(record["review"], "independent")
+        self.assertEqual([item["via"] for item in record["candidates"]], ["pi"])
+        self.assertEqual(record["selected"]["model"], "kimi-reviewer")
+
+    def test_no_host_reports_no_available_worker_when_role_only_has_host_candidates(self):
+        path = self.config("host-only.json", {"small_review": [
+            self.candidate("host", "Anthropic", "claude-reviewer"),
+            self.candidate("host", "OpenAI", "gpt-reviewer")]})
+        self.env["AF_NO_HOST"] = "1"
+        result = self.run_af("select", "--role", "small_review", "--writer-company", "DeepSeek",
+                             "--config", path)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertIsNone(record["selected"])
+        self.assertEqual(record["error"], "no configured worker CLI is available")
+
+    def test_other_no_host_values_keep_host_candidates_available(self):
+        path = self.config("reviewers.json", {"small_review": [
+            self.candidate("host", "Anthropic", "claude-reviewer"),
+            self.candidate("codex", "OpenAI", "codex-reviewer"),
+            self.candidate("pi", "Moonshot", "kimi-reviewer")]})
+        self.write_exe("codex")
+        self.write_exe("pi")
+        for value in (None, "true"):
+            with self.subTest(value=value):
+                if value is None:
+                    self.env.pop("AF_NO_HOST", None)
+                else:
+                    self.env["AF_NO_HOST"] = value
+                result = self.run_af("select", "--role", "small_review", "--writer-company", "DeepSeek",
+                                     "--config", path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                record = json.loads(result.stdout)
+                self.assertEqual(record["candidates"][0]["via"], "host")
+                self.assertEqual(record["selected"]["model"], "claude-reviewer")
 
     def test_missing_independent_cli_does_not_fall_back_to_same_company(self):
         self.write_exe("codex")
