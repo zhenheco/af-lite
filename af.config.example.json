@@ -1,0 +1,40 @@
+{
+  "roles": {
+    "writer": [
+      {"via": "pi", "provider": "example-provider", "model": "example-writer", "company": "Writer Co"},
+      {"via": "codex", "profile": "example-profile", "company": "Writer Co"}
+    ],
+    "small_review": [
+      {"via": "host", "model": "claude-sonnet", "company": "Anthropic"}
+    ],
+    "big_review": [
+      {"via": "pi", "provider": "example-review-provider", "model": "example-reviewer", "company": "Reviewer Co"}
+    ]
+  },
+  "quota_stop": {
+    "exit_statuses": [75],
+    "patterns": [
+      "rate limit exceeded",
+      "429 Too Many Requests",
+      "quota exceeded",
+      "insufficient_quota",
+      "usage limit reached"
+    ]
+  },
+  "quota_retry_minutes": 15,
+  "worker_timeout_minutes": 60,
+  "test_timeout_minutes": 30,
+  "stale_after_minutes": 30,
+  "skill_dirs": ["~/.claude/skills", "~/.agents/skills", "./skills"],
+  "auto_merge": true,
+  "high_risk_paths": [],
+  "tests": {
+    "focused": "<your focused test command>",
+    "full": "<your full test command>"
+  },
+  "record_retention": {
+    "archive_after_days": 30,
+    "archive_dir": null,
+    "delete_after_days": 180
+  }
+}
