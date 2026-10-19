@@ -94,12 +94,27 @@ def validate_config(config):
                 raise ValueError(f"role {role} candidate must be an object")
             via = candidate.get("via")
             required = settings.get(via)
-            if required is None or set(candidate) - (required | {"via", "company"}):
+            allowed = required | {"via", "company"} if required is not None else set()
+            if via == "pi":
+                allowed |= {"tools", "env_allow"}
+            if required is None or set(candidate) - allowed:
                 raise ValueError(f"role {role} candidate must use pi, codex, or host settings")
             if any(not isinstance(candidate.get(key), str) or not candidate[key] for key in required):
                 raise ValueError(f"role {role} candidate is missing CLI settings")
             if not isinstance(candidate.get("company"), str) or not candidate["company"].strip():
                 raise ValueError(f"role {role} candidate needs a company")
+            if via == "pi" and "tools" in candidate:
+                tools = candidate["tools"]
+                if (not isinstance(tools, list) or not tools
+                        or any(not isinstance(tool, str) or not re.fullmatch(r"[A-Za-z0-9_*:-]+", tool)
+                               for tool in tools)):
+                    raise ValueError(f"role {role} candidate tools must be a nonempty array of valid tool names")
+            if via == "pi" and "env_allow" in candidate:
+                env_allow = candidate["env_allow"]
+                if (not isinstance(env_allow, list)
+                        or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                                for name in env_allow)):
+                    raise ValueError(f"role {role} candidate env_allow must be an array of valid environment names")
 
     for field in ("skill_dirs", "high_risk_paths"):
         if field in config:

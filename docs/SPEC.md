@@ -36,7 +36,7 @@ Unknown fields are rejected. Supported fields are:
 
 | Field | Use |
 |---|---|
-| `roles` | Ordered candidates. Candidate keys: `via`, `company`, and `provider` plus `model` for Pi or `profile` for Codex. |
+| `roles` | Ordered candidates. Candidate keys: `via`, `company`, and `provider` plus `model` for Pi or `profile` for Codex. Pi also accepts optional `tools` and `env_allow`. |
 | `quota_stop.exit_statuses`, `quota_stop.patterns` | Quota exit codes and stderr regex patterns. |
 | `quota_retry_minutes` | Retry delay reported when eligible candidates are quota-exhausted. |
 | `worker_timeout_minutes`, `test_timeout_minutes` | Worker and test timeouts. |
@@ -46,6 +46,8 @@ Unknown fields are rejected. Supported fields are:
 | `high_risk_paths` | Git ignore patterns checked against committed paths from base through flow branch. |
 | `tests.focused`, `tests.full` | Shell command strings. |
 | `record_retention.archive_after_days`, `record_retention.archive_dir`, `record_retention.delete_after_days` | Archive and deletion ages and destination for completed or stopped flow records and logs. |
+
+For Pi candidates, `tools` is a non-empty tool list passed with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. `env_allow` may be empty; it keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, not credential files on disk or Pi's own credential file.
 
 Defaults and field details are in the root [README](../README.md) and [example config](../af.config.example.json).
 

@@ -67,7 +67,7 @@ Unknown config fields are rejected. These are exactly the supported fields:
 
 | Field | Meaning |
 |---|---|
-| `roles` | Ordered candidates for each role. Each candidate uses `via` (`pi`, `codex`, or `host`) and `company`; Pi uses `provider` plus `model`, Codex uses `profile`, and host uses `model`. |
+| `roles` | Ordered candidates for each role. Each candidate uses `via` (`pi`, `codex`, or `host`) and `company`; Pi uses `provider` plus `model`, Codex uses `profile`, and host uses `model`. Pi also accepts optional `tools` and `env_allow` candidate settings. |
 | `quota_stop.exit_statuses` | Worker exit statuses treated as quota stops; default: `[75]`. |
 | `quota_stop.patterns` | Case-insensitive regexes matched against worker stderr after removing the prompt; no text patterns are enabled by default. |
 | `quota_retry_minutes` | Delay to report when all candidates stop for quota; default: `15`. |
@@ -81,6 +81,8 @@ Unknown config fields are rejected. These are exactly the supported fields:
 | `record_retention.archive_after_days` | Age before eligible records are archived; default: `30`; `null` disables archival. |
 | `record_retention.archive_dir` | Archive root; relative paths resolve under `<git-common-dir>/.af/`; `null` disables archival. |
 | `record_retention.delete_after_days` | Age before eligible records and logs are deleted; default: `180`; `null` disables deletion. |
+
+On Pi candidates, `tools` is a non-empty list passed to Pi with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. `env_allow` may be empty; it keeps the standard runtime, locale, proxy, and CA variables plus listed names that are set in the parent. It removes tokens from the environment, but not credential files on disk or Pi's own credential file.
 
 `host` candidates mean the current host starts its own fresh subagent, so when the host differs from the one the config's `host` models belong to (for example, Pi or Codex with Claude models), use a config whose `host` entries match that host, or list `pi`/`codex` reviewer candidates instead.
 

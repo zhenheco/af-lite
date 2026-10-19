@@ -87,6 +87,8 @@ Only continue to the project's normal PR process when the decision is `merge`. A
 
 Config resolves from `--config`, `$AF_CONFIG`, the primary checkout's `af.config.json`, then `~/.config/af/af.config.json`. Any resolved config path inside a linked worktree on an `af/*` branch is refused. `state start` records the resolved config path.
 
+Pi candidates may set `tools` to a non-empty list passed to Pi with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. `env_allow` may be empty and keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, but not credential files on disk or Pi's own credential file.
+
 ```sh
 af state status --repo /path/to/repository-<id> --flow-id <id>
 af state stop --repo /path/to/repository-<id> --flow-id <id>

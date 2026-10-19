@@ -1,14 +1,18 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lib"))
+from config import validate_config
 
 
 def git(cwd, *args):
@@ -29,6 +33,9 @@ class DispatchCommandTests(unittest.TestCase):
         self.env["PATH"] = f"{self.bin}{os.pathsep}{self.env.get('PATH', '')}"
         self.env.pop("AF_CONFIG", None)
         self.env.pop("AF_NO_HOST", None)
+        self.pi_args_file = self.base / "pi-args"
+        self.pi_env_file = self.base / "pi-env-names"
+        self.pi_prompt_file = self.base / "pi-prompt"
         self.repo = self.base / "project"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
@@ -55,6 +62,10 @@ class DispatchCommandTests(unittest.TestCase):
 
     def pi_script(self):
         return ("#!/bin/sh\n"
+                f"printf '%s\\n' \"$@\" > {shlex.quote(str(self.pi_args_file))}\n"
+                f"{shlex.quote(sys.executable)} -c 'import json, os; print(json.dumps(sorted(os.environ)))' "
+                f"> {shlex.quote(str(self.pi_env_file))}\n"
+                f"cat > {shlex.quote(str(self.pi_prompt_file))}\n"
                 "case \"${FAKE_PI_MODE:-success}\" in\n"
                 "  quota) echo 'rate limit exceeded' >&2; exit 75 ;;\n"
                 "  change-quota) echo changed > changed.txt; echo 'quota exceeded' >&2; exit 75 ;;\n"
@@ -87,6 +98,111 @@ class DispatchCommandTests(unittest.TestCase):
     def dispatch(self, prompt="implement the fixture", env=None):
         return self.run_af("dispatch", "--worktree", self.worktree, "--flow-id", "dispatch-001",
                            "--role", "writer", "--prompt", prompt, env=env)
+
+    def test_default_pi_candidate_keeps_argv_and_inherits_environment(self):
+        self.env["FAKE_DEFAULT_SENTINEL"] = "visible"
+        result = self.dispatch("default prompt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.pi_args_file.read_text().splitlines(),
+                         ["--print", "--provider", "openai", "--model", "writer"])
+        self.assertIn("FAKE_DEFAULT_SENTINEL", json.loads(self.pi_env_file.read_text()))
+        self.assertIn("default prompt", self.pi_prompt_file.read_text())
+
+    def test_pi_tools_are_passed_and_prompt_still_arrives_on_stdin(self):
+        tools = ["read", "edit", "write", "grep", "find", "ls"]
+        self.write_config({"writer": [{
+            "via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI",
+            "tools": tools}]})
+        result = self.dispatch("tools prompt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.pi_args_file.read_text().splitlines(), [
+            "--print", "--provider", "openai", "--model", "writer",
+            "--tools", "read,edit,write,grep,find,ls", "--no-mcp"])
+        self.assertEqual(self.pi_prompt_file.read_text(),
+                         "ROLE: You are the WRITER, started non-interactively for this worktree. "
+                         "Implement directly here; do not dispatch another writer; do not ask the user; "
+                         "leave changes uncommitted; never push.\n\ntools prompt")
+
+    def test_env_allow_preserves_only_selected_parent_variables_and_baseline(self):
+        self.env["ONLY_THIS"] = "allow-listed"
+        self.env["FAKE_CLOUDFLARE_API_TOKEN"] = "secret"
+        self.write_config({"writer": [{
+            "via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI",
+            "env_allow": ["ONLY_THIS"]}]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment_names = set(json.loads(self.pi_env_file.read_text()))
+        self.assertTrue({"PATH", "HOME", "ONLY_THIS"} <= environment_names)
+        self.assertNotIn("FAKE_CLOUDFLARE_API_TOKEN", environment_names)
+
+    def test_empty_env_allow_still_scrubs_parent_environment(self):
+        self.env["ONLY_THIS"] = "not allow-listed"
+        self.env["FAKE_CLOUDFLARE_API_TOKEN"] = "secret"
+        self.write_config({"writer": [{
+            "via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI",
+            "env_allow": []}]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment_names = set(json.loads(self.pi_env_file.read_text()))
+        self.assertTrue({"PATH", "HOME"} <= environment_names)
+        self.assertNotIn("ONLY_THIS", environment_names)
+        self.assertNotIn("FAKE_CLOUDFLARE_API_TOKEN", environment_names)
+
+    def test_tools_and_env_allow_can_be_used_together(self):
+        self.env["ONLY_THIS"] = "allow-listed"
+        self.env["FAKE_CLOUDFLARE_API_TOKEN"] = "secret"
+        self.write_config({"writer": [{
+            "via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI",
+            "tools": ["read", "edit", "write", "grep", "find", "ls"],
+            "env_allow": ["ONLY_THIS"]}]})
+        result = self.dispatch("combined prompt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.pi_args_file.read_text().splitlines(), [
+            "--print", "--provider", "openai", "--model", "writer",
+            "--tools", "read,edit,write,grep,find,ls", "--no-mcp"])
+        environment_names = set(json.loads(self.pi_env_file.read_text()))
+        self.assertTrue({"PATH", "HOME", "ONLY_THIS"} <= environment_names)
+        self.assertNotIn("FAKE_CLOUDFLARE_API_TOKEN", environment_names)
+
+    def test_pi_candidate_accepts_valid_tools_and_env_allow_settings(self):
+        combinations = [
+            {"tools": ["read", "tool-name", "mcp:*_v2"]},
+            {"env_allow": []},
+            {"env_allow": ["ONLY_THIS", "_ALSO_OK2"]},
+            {"tools": ["read", "edit"], "env_allow": ["ONLY_THIS"]},
+        ]
+        for settings in combinations:
+            with self.subTest(settings=settings):
+                validate_config({"roles": {"writer": [{
+                    "via": "pi", "provider": "openai", "model": "writer",
+                    "company": "OpenAI", **settings}]} })
+
+    def test_pi_candidate_rejects_invalid_tools_and_env_allow_values(self):
+        invalid_settings = [
+            {"tools": []},
+            {"tools": ["read", "tool,name"]},
+            {"tools": "read"},
+            {"env_allow": ["1BAD_NAME"]},
+            {"env_allow": "ONLY_THIS"},
+        ]
+        for settings in invalid_settings:
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                validate_config({"roles": {"writer": [{
+                    "via": "pi", "provider": "openai", "model": "writer",
+                    "company": "OpenAI", **settings}]} })
+
+    def test_pi_candidate_rejects_unknown_keys_and_non_pi_confinement_settings(self):
+        candidates = [
+            {"via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI",
+             "unknown": "value"},
+            {"via": "codex", "profile": "writer", "company": "OpenAI", "tools": ["read"]},
+            {"via": "codex", "profile": "writer", "company": "OpenAI", "env_allow": []},
+            {"via": "host", "model": "writer", "company": "OpenAI", "tools": ["read"]},
+            {"via": "host", "model": "writer", "company": "OpenAI", "env_allow": []},
+        ]
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                validate_config({"roles": {"writer": [candidate]}})
 
     def test_quota_failover_runs_next_worker_when_head_and_status_are_unchanged(self):
         self.env["FAKE_PI_MODE"] = "quota"
