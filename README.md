@@ -76,11 +76,17 @@ Unknown config fields are rejected. These are exactly the supported fields:
 | `stale_after_minutes` | Age after which a running step may be resumed; default: `30`. |
 | `skill_dirs` | Directories containing Matt skill folders; default: `~/.claude/skills`, `~/.agents/skills`, and `<repo>/skills`. |
 | `auto_merge` | Whether an otherwise clear gate decision may return `merge`; default: `true`. |
-| `high_risk_paths` | Git ignore patterns checked against committed paths from base to flow branch. |
+| `high_risk_paths` | Effective Git ignore patterns: the optional global baseline followed by this project's entries, checked against committed paths from base to flow branch. |
 | `tests.focused`, `tests.full` | Shell command strings run in the flow worktree. |
 | `record_retention.archive_after_days` | Age before eligible records are archived; default: `30`; `null` disables archival. |
 | `record_retention.archive_dir` | Archive root; relative paths resolve under `<git-common-dir>/.af/`; `null` disables archival. |
 | `record_retention.delete_after_days` | Age before eligible records and logs are deleted; default: `180`; `null` disables deletion. |
+
+### Global high-risk baseline
+
+The optional baseline lives at `$HOME/.config/af/af.config.json` under `high_risk_paths`; copy the [reference baseline](docs/high-risk-baseline.example.json). If the file or field is absent, project config behavior is unchanged. Only `high_risk_paths` is merged; other global fields are not inherited. Global patterns come first and project patterns follow, with duplicates kept at their last occurrence; Git ignore rules let the last matching pattern decide, so dropping earlier duplicates never changes which paths match. A later project `!` pattern can cancel a file or basename match. Git tests confirm `!scripts/ci-local.sh` cancels `scripts/ci*`, but it cannot re-include that file when the parent directory pattern `scripts/` is excluded.
+
+An invalid global JSON file, a non-string-array `high_risk_paths`, a broken symlink (including a symlink loop), a directory at the config path, an unreadable config file, or an unreadable or broken-symlink ancestor directory between `$HOME` and the config file makes `load_config` fail closed; symlinks resolving to valid files are supported. `gate decide` returns `blocked` and exits 2. `af doctor` reports `high_risk.baseline_count`, `effective_count`, and `warnings`; each count is `null` when the corresponding config cannot be loaded. Only a successfully loaded but empty effective list adds `high_risk_paths is empty: the merge gate auto-merges every path`; this warning does not change `ok` or the exit code.
 
 On Pi candidates, `tools` is a non-empty list passed to Pi with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. On Claude candidates, `tools` removes the shell tool (the CLI is started with `--tools`, `--permission-mode acceptEdits` and `--strict-mcp-config`), but af passes no flag that turns off user or project settings or hooks, so hooks and settings `env` entries still apply, and the file tools are not confined to the worktree. `env_allow` may be empty; it keeps the standard runtime, locale, proxy, and CA variables plus listed names that are set in the parent. It removes tokens from the environment, but not credential files on disk or Pi's own credential file.
 

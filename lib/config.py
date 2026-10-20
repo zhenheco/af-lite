@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 
 FIELDS = {"roles", "quota_stop", "quota_retry_minutes",
@@ -38,6 +39,9 @@ def validate_config_location(path):
             raise RuntimeError(f"config path is inside linked worktree on af/* branch: {path}")
     return path
 
+def global_config_path(env):
+    return (Path(env.get("HOME", str(Path.home()))) / ".config/af/af.config.json").resolve()
+
 def resolve_config_path(explicit=None, cwd=None, env=None):
     env = os.environ if env is None else env
     selected = explicit or env.get("AF_CONFIG")
@@ -46,22 +50,79 @@ def resolve_config_path(explicit=None, cwd=None, env=None):
     else:
         root = primary_checkout_root(Path.cwd() if cwd is None else Path(cwd))
         local = root / "af.config.json" if root else None
-        path = local.resolve() if local and local.is_file() else (
-            Path(env.get("HOME", str(Path.home()))) / ".config/af/af.config.json").resolve()
+        path = local.resolve() if local and local.is_file() else global_config_path(env)
     return validate_config_location(path)
+
+def read_global_config(env):
+    home = Path(env.get("HOME", str(Path.home())))
+    raw = home / ".config/af/af.config.json"
+    try:
+        os.lstat(raw)
+    except (FileNotFoundError, NotADirectoryError):
+        parent = raw.parent
+        while parent != home and parent != parent.parent:
+            try:
+                details = os.lstat(parent)
+            except (FileNotFoundError, NotADirectoryError):
+                parent = parent.parent
+                continue
+            except OSError as exc:
+                raise RuntimeError(f"invalid global config {raw}: {exc}") from exc
+            if stat.S_ISLNK(details.st_mode):
+                try:
+                    os.stat(parent)
+                except (FileNotFoundError, NotADirectoryError) as exc:
+                    raise RuntimeError(
+                        f"invalid global config {raw}: broken symlink ancestor {parent}") from exc
+                except OSError as exc:
+                    raise RuntimeError(f"invalid global config {raw}: {exc}") from exc
+            parent = parent.parent
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"invalid global config {raw}: {exc}") from exc
+
+    path = raw
+    try:
+        path = raw.resolve()
+        if not path.is_file(): raise OSError("not a readable regular file")
+        config = json.loads(path.read_text())
+        if not isinstance(config, dict): raise ValueError("config has invalid fields or type")
+        if "high_risk_paths" in config:
+            require_strings(config["high_risk_paths"], "high_risk_paths")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"invalid global config {path}: {exc}") from exc
+    return config
+
+def global_high_risk_patterns(env):
+    config = read_global_config(env)
+    return None if config is None else config.get("high_risk_paths")
 
 def load_config(explicit=None, cwd=None, env=None, require=True):
     env = os.environ if env is None else env
     path = resolve_config_path(explicit, cwd, env)
+    is_global_config = path == global_config_path(env)
+    if is_global_config:
+        config = read_global_config(env)
+        if config is None:
+            if require or explicit or env.get("AF_CONFIG"):
+                raise RuntimeError(f"config file not found: {path}")
+            return {}, path
+        validate_config(config)
+        return config, path
     if not path.is_file():
         if require or explicit or env.get("AF_CONFIG"):
             raise RuntimeError(f"config file not found: {path}")
         return {}, path
     try:
         config = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise RuntimeError(f"invalid config {path}: {exc}") from exc
     validate_config(config)
+    baseline = global_high_risk_patterns(env)
+    if baseline is not None:
+        combined = [*baseline, *config.get("high_risk_paths", [])]
+        # Git ignore lets the last matching pattern decide, so dedupe keeps the last occurrence.
+        config["high_risk_paths"] = list(dict.fromkeys(reversed(combined)))[::-1]
     return config, path
 
 def require_object(value, name, allowed=None):

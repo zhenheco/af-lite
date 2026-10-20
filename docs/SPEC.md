@@ -43,7 +43,7 @@ Unknown fields are rejected. Supported fields are:
 | `stale_after_minutes` | Age after which a running step can be claimed again. |
 | `skill_dirs` | Roots containing required Matt skill folders. |
 | `auto_merge` | Whether an otherwise clear decision may return `merge`. |
-| `high_risk_paths` | Git ignore patterns checked against committed paths from base through flow branch. |
+| `high_risk_paths` | Effective Git ignore patterns: the optional global baseline followed by project entries, checked against committed paths from base through flow branch. |
 | `tests.focused`, `tests.full` | Shell command strings. |
 | `record_retention.archive_after_days`, `record_retention.archive_dir`, `record_retention.delete_after_days` | Archive and deletion ages and destination for completed or stopped flow records and logs. |
 
@@ -53,7 +53,7 @@ Defaults and field details are in the root [README](../README.md) and [example c
 
 ## Cleanup and doctor
 
-`cleanup` archives or deletes only completed or stopped flow records and their logs after configured ages. The README shows how to schedule cleanup with cron or launchd. `doctor` checks Git, supported config, required Matt skills by folder name, optional CLIs, and warns when setup-matt-pocock-skills documents are missing.
+`cleanup` archives or deletes only completed or stopped flow records and their logs after configured ages. The README shows how to schedule cleanup with cron or launchd. `doctor` checks Git, supported config, required Matt skills by folder name, optional CLIs, and warns when setup-matt-pocock-skills documents are missing; it reports `high_risk.baseline_count`, `effective_count`, and `warnings`, setting `baseline_count` to `null` when the global baseline is invalid, `effective_count` to `null` when the project config or global baseline is invalid, and adding a warning for zero `effective_count` without changing `ok`.
 
 ## Commands and validation
 

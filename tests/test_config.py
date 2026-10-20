@@ -1,0 +1,283 @@
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lib"))
+from config import load_config, validate_config
+from gate import high_risk_paths
+
+
+class ConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.home = self.base / "home"
+        self.home.mkdir()
+        self.global_config = self.home / ".config" / "af" / "af.config.json"
+        self.env = dict(os.environ, HOME=str(self.home))
+        self.env.pop("AF_CONFIG", None)
+
+    def write_json(self, path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+        return path
+
+    def test_project_config_unions_global_risk_patterns_only(self):
+        self.write_json(self.global_config, {
+            "high_risk_paths": ["auth/", "billing/", "shared", "shared"],
+            "auto_merge": False,
+            "tests": {"full": "false"},
+        })
+        repo = self.base / "project"
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        local = self.write_json(repo / "af.config.json", {
+            "high_risk_paths": ["local/", "shared"],
+            "auto_merge": True,
+            "tests": {"full": "true"},
+        })
+
+        config, path = load_config(cwd=repo, env=self.env)
+        self.assertEqual(path, local.resolve())
+        self.assertEqual(config["high_risk_paths"], ["auth/", "billing/", "local/", "shared"])
+        self.assertTrue(config["auto_merge"])
+        self.assertEqual(config["tests"], {"full": "true"})
+
+        explicit, explicit_path = load_config(local, env=self.env)
+        self.assertEqual(explicit_path, local.resolve())
+        self.assertEqual(explicit["high_risk_paths"], config["high_risk_paths"])
+        self.assertTrue(explicit["auto_merge"])
+        self.assertEqual(explicit["tests"], {"full": "true"})
+
+    def test_merge_keeps_a_single_copy_of_patterns_duplicated_across_configs(self):
+        self.write_json(self.global_config, {"high_risk_paths": ["billing/"]})
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": ["billing/"]})
+
+        config, _ = load_config(local, env=self.env)
+
+        self.assertEqual(config["high_risk_paths"], ["billing/"])
+
+    def test_missing_global_file_or_high_risk_key_preserves_project_config(self):
+        local = self.write_json(self.base / "project.json", {"auto_merge": True})
+        config, _ = load_config(local, env=self.env)
+        self.assertEqual(config, {"auto_merge": True})
+
+        self.write_json(self.global_config, {"auto_merge": False, "tests": {"full": "false"}})
+        config, _ = load_config(local, env=self.env)
+        self.assertEqual(config, {"auto_merge": True})
+
+    def test_missing_global_config_through_non_directory_keeps_project_config(self):
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": ["local/"]})
+        self.write_json(self.home / ".config", {"not": "a directory"})
+
+        config, _ = load_config(local, env=self.env)
+
+        self.assertEqual(config, {"high_risk_paths": ["local/"]})
+
+    def test_global_config_path_is_loaded_once(self):
+        self.write_json(self.global_config, {"high_risk_paths": ["auth/", "auth/"]})
+        config, path = load_config(self.global_config, env=self.env)
+        self.assertEqual(path, self.global_config.resolve())
+        self.assertEqual(config["high_risk_paths"], ["auth/", "auth/"])
+
+    def test_invalid_global_json_or_high_risk_value_fails_closed(self):
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": []})
+        self.global_config.parent.mkdir(parents=True, exist_ok=True)
+        for source in (local, self.global_config):
+            for content in ("{", json.dumps({"high_risk_paths": "auth/"}),
+                            json.dumps({"high_risk_paths": ["auth/", 1]})):
+                with self.subTest(source=source.name, content=content):
+                    self.global_config.write_text(content)
+                    with self.assertRaises(RuntimeError) as caught:
+                        load_config(source, env=self.env)
+                    self.assertTrue(str(caught.exception).startswith(
+                        f"invalid global config {self.global_config.resolve()}:"))
+
+    def test_unreadable_global_baseline_fails_closed(self):
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": []})
+        self.global_config.parent.mkdir(parents=True, exist_ok=True)
+
+        self.global_config.symlink_to(self.base / "missing-target")
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(local, env=self.env)
+        self.assertTrue(str(caught.exception).startswith(
+            f"invalid global config {self.global_config.resolve()}:"))
+        self.global_config.unlink()
+
+        self.global_config.mkdir()
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(local, env=self.env)
+        self.assertTrue(str(caught.exception).startswith(
+            f"invalid global config {self.global_config.resolve()}:"))
+        self.global_config.rmdir()
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            return  # chmod 000 stays readable for root
+        self.write_json(self.global_config, {"high_risk_paths": []})
+        self.global_config.chmod(0)
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                load_config(local, env=self.env)
+            self.assertTrue(str(caught.exception).startswith(
+                f"invalid global config {self.global_config.resolve()}:"))
+        finally:
+            self.global_config.chmod(0o600)
+
+    def test_unreadable_global_parent_fails_closed(self):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root can read a mode-000 directory")
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": []})
+        directory = self.global_config.parent
+        directory.mkdir(parents=True)
+        self.write_json(self.global_config, {"high_risk_paths": ["*"]})
+        original_mode = directory.stat().st_mode & 0o777
+        self.addCleanup(directory.chmod, original_mode)
+        directory.chmod(0)
+
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(local, env=self.env)
+
+        self.assertTrue(str(caught.exception).startswith(f"invalid global config {self.global_config}:"))
+
+    def test_broken_global_parent_symlink_fails_closed(self):
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": ["local/"]})
+        config_dir = self.home / ".config"
+        config_dir.mkdir()
+        af_dir = config_dir / "af"
+        af_dir.symlink_to(self.base / "unmounted" / "dotfiles" / "af")
+
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(local, env=self.env)
+
+        self.assertTrue(str(caught.exception).startswith(f"invalid global config {self.global_config}:"))
+        self.assertIn(f"broken symlink ancestor {af_dir}", str(caught.exception))
+
+    def test_invalid_utf8_configs_fail_with_runtime_error(self):
+        local = self.write_json(self.base / "project.json", {"high_risk_paths": []})
+        self.global_config.parent.mkdir(parents=True, exist_ok=True)
+        self.global_config.write_bytes(b"\xff\xfe invalid utf-8")
+
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(self.global_config, env=self.env)
+        self.assertTrue(str(caught.exception).startswith(
+            f"invalid global config {self.global_config.resolve()}:"))
+
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(local, env=self.env)
+        self.assertTrue(str(caught.exception).startswith(
+            f"invalid global config {self.global_config.resolve()}:"))
+
+        self.global_config.unlink()
+        local.write_bytes(b"\xff\xfe invalid utf-8")
+        with self.assertRaises(RuntimeError) as caught:
+            load_config(local, env=self.env)
+        self.assertTrue(str(caught.exception).startswith(f"invalid config {local.resolve()}:"))
+        self.assertFalse(str(caught.exception).startswith("invalid global config"))
+
+    def test_reference_baseline_matches_the_spec_and_git_paths(self):
+        expected = """auth/
+authn/
+authz/
+oauth/
+session/
+sessions/
+login/
+admin/
+audit/
+*password*
+*credential*
+*secret*
+*.pem
+*.key
+.env
+.env.*
+payment/
+payments/
+billing/
+checkout/
+invoice/
+invoices/
+webhook/
+webhooks/
+*payment*
+*refund*
+*invoice*
+*webhook*
+*checkout*
+*reconcil*
+*payuni*
+*stripe*
+*amego*
+migrations/
+supabase/
+prisma/
+drizzle/
+alembic/
+worker/
+workers/
+functions/
+release/
+.github/workflows/
+.github/actions/
+Dockerfile*
+docker-compose*.yml
+wrangler*.jsonc
+wrangler*.toml
+fly.toml
+vercel.json
+netlify.toml
+deploy/
+scripts/deploy*
+scripts/ci*
+*.plist
+terraform/
+*.tf
+security/
+_headers
+crypto.*
+crypto/
+*.rules
+af.config.json""".splitlines()
+        baseline_path = ROOT / "docs" / "high-risk-baseline.example.json"
+        patterns = json.loads(baseline_path.read_text())["high_risk_paths"]
+        self.assertEqual(patterns, expected)
+        self.assertEqual(len(patterns), 63)
+        validate_config({"high_risk_paths": patterns})
+
+        repo = self.base / "baseline-repo"
+        repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(["git", "-C", str(repo), *args], check=True, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+
+        git("init", "-q")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "user.name", "Test User")
+        (repo / "README.md").write_text("base\n")
+        git("add", "README.md")
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        marked = ["src/auth/login.py", "migrations/0001_init.sql", ".github/workflows/ci.yml",
+                  "apps/landing/worker/index.mjs", "apps/x/payment-reconciliation.mjs", ".env.example",
+                  "wrangler.production.jsonc"]
+        unmarked = ["README.md", "src/components/button.tsx", "src/domain/slip.py"]
+        for relative in (*marked, *unmarked):
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("changed\n")
+        git("add", "--", *marked, *unmarked)
+        git("commit", "-qm", "representative paths")
+
+        self.assertEqual(high_risk_paths(repo, patterns, base), sorted(marked))
+
+
+if __name__ == "__main__":
+    unittest.main()
