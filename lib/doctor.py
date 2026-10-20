@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from config import load_config
+from config import global_high_risk_patterns, load_config
 
 REQUIRED_SKILLS = ("grill-with-docs", "to-spec", "to-tickets", "implement-spec", "implement", "tdd",
                    "code-review", "diagnosing-bugs", "pr", "retro")
@@ -24,11 +24,18 @@ def check(args):
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) if git_available else None
     repo = Path(result.stdout.strip()).resolve() if result and result.returncode == 0 else None
     try:
+        baseline = global_high_risk_patterns(os.environ)
+        baseline_count = len(baseline) if baseline is not None else 0
+    except RuntimeError:
+        baseline_count = None
+    try:
         config, config_path = load_config(args.config, cwd=repo or Path(args.repo))
         config_report = {"valid": True, "path": str(config_path), "error": None}
+        effective_count = len(config.get("high_risk_paths", []))
     except (OSError, RuntimeError, ValueError) as exc:
         config = {}
         config_report = {"valid": False, "path": None, "error": str(exc)}
+        effective_count = None
 
     directories = skill_directories(config, repo or Path(args.repo))
     found = [name for name in REQUIRED_SKILLS
@@ -43,6 +50,10 @@ def check(args):
                                    "warnings": [f"missing {', '.join(docs)}; run /setup-matt-pocock-skills once in this repository"]
                                    if docs else []},
               "optional_tools": {name: shutil.which(name) is not None for name in OPTIONAL_TOOLS},
+              "high_risk": {"baseline_count": baseline_count,
+                            "effective_count": effective_count,
+                            "warnings": ["high_risk_paths is empty: the merge gate auto-merges every path"]
+                            if effective_count == 0 else []},
               "config": config_report}
     return report
 

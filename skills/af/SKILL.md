@@ -15,7 +15,7 @@ Use af-lite to run an ordered Matt Pocock skill flow. The skills and worker CLIs
    af doctor --repo /path/to/repository
    ```
 
-   Doctor checks the ten flow skills: `grill-with-docs`, `to-spec`, `to-tickets`, `implement-spec`, `implement`, `tdd`, `code-review`, `diagnosing-bugs`, `pr`, and `retro`. It warns if `docs/agents/issue-tracker.md` or `docs/agents/domain.md` is missing.
+   Doctor checks the ten flow skills: `grill-with-docs`, `to-spec`, `to-tickets`, `implement-spec`, `implement`, `tdd`, `code-review`, `diagnosing-bugs`, `pr`, and `retro`. It warns if `docs/agents/issue-tracker.md` or `docs/agents/domain.md` is missing; it reports `high_risk.baseline_count`, `effective_count`, and `warnings`, setting `baseline_count` to `null` when the global baseline is invalid, `effective_count` to `null` when the project config or global baseline is invalid, and adding a warning for zero `effective_count` without changing `ok`.
 
 2. Create a unique flow ID. Keep the returned sibling worktree path and `base_sha`:
 
@@ -86,6 +86,7 @@ Only continue to the project's normal PR process when the decision is `merge`. A
 ## Config and cleanup
 
 Config resolves from `--config`, `$AF_CONFIG`, the primary checkout's `af.config.json`, then `~/.config/af/af.config.json`. Any resolved config path inside a linked worktree on an `af/*` branch is refused. `state start` records the resolved config path.
+When a project config is selected, only `high_risk_paths` from `$HOME/.config/af/af.config.json` is prepended to its list; duplicates keep their last occurrence.
 
 Pi candidates may set `tools` to a non-empty list passed to Pi with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. On Claude candidates, `tools` removes the shell tool (the CLI is started with `--tools`, `--permission-mode acceptEdits` and `--strict-mcp-config`), but af passes no flag that turns off user or project settings or hooks, so hooks and settings `env` entries still apply, and the file tools are not confined to the worktree. `env_allow` may be empty and keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, but not credential files on disk or Pi's own credential file. Claude Code CLI candidates use `model` and accept the same optional `tools` (passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`) and `env_allow`. Claude candidates also accept `base_url` plus `api_key_command` (both required together, `https://` only), which point the Claude CLI at another vendor's Anthropic-compatible endpoint: af then starts `claude --bare` (which skips user and project settings and hooks), runs the command for the key, passes it as `ANTHROPIC_API_KEY` with `ANTHROPIC_BASE_URL`, and removes `ANTHROPIC_AUTH_TOKEN`; a failed or empty key command fails the attempt without starting the CLI.
 

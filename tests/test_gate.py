@@ -18,6 +18,7 @@ def git(cwd, *args):
 class GateCommandTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.home = self.base / "home"
         self.home.mkdir()
@@ -47,9 +48,6 @@ class GateCommandTests(unittest.TestCase):
         self.config.write_text(json.dumps({"tests": {
             "focused": "fake-test focused", "full": "fake-test full"
         }, "auto_merge": True, "high_risk_paths": []}))
-
-    def tearDown(self):
-        self.temp.cleanup()
 
     def fake_gitleaks(self, exit_code=0):
         path = self.bin / "gitleaks"
@@ -98,6 +96,167 @@ class GateCommandTests(unittest.TestCase):
                                "--tests", "pass", "--reviews", "pass")
         self.assertNotEqual(test.returncode, 0)
         self.assertNotEqual(decision.returncode, 0)
+
+    def test_invalid_global_config_blocks_gate_decision_with_exit_two(self):
+        worktree = self.create_flow("gate-invalid-global")
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text("{")
+
+        result = self.run_af("gate", "decide", "--repo", worktree,
+                             "--flow-id", "gate-invalid-global", "--tests", "pass", "--reviews", "pass")
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "blocked")
+        self.assertIn("invalid global config", report["reasons"][0])
+
+    def test_broken_global_baseline_symlink_blocks_gate_decision(self):
+        worktree = self.create_flow("gate-broken-global")
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.symlink_to(self.base / "unmounted" / "af.config.json")
+
+        result = self.run_af("gate", "decide", "--repo", worktree,
+                             "--flow-id", "gate-broken-global", "--tests", "pass", "--reviews", "pass")
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "blocked")
+        self.assertIn("invalid global config", report["reasons"][0])
+
+    def test_broken_global_parent_symlink_blocks_gate_decision(self):
+        worktree = self.create_flow("gate-broken-global-parent")
+        config_dir = self.home / ".config"
+        config_dir.mkdir()
+        (config_dir / "af").symlink_to(self.base / "unmounted" / "dotfiles" / "af")
+
+        result = self.run_af("gate", "decide", "--repo", worktree,
+                             "--flow-id", "gate-broken-global-parent", "--tests", "pass", "--reviews", "pass")
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "blocked")
+        self.assertIn("invalid global config", report["reasons"][0])
+
+    def test_unreadable_global_parent_blocks_gate_decision(self):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root can read a mode-000 directory")
+        worktree = self.create_flow("gate-unreadable-global-parent")
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["*"]}))
+        original_mode = global_config.parent.stat().st_mode & 0o777
+        self.addCleanup(global_config.parent.chmod, original_mode)
+        global_config.parent.chmod(0)
+
+        result = self.run_af("gate", "decide", "--repo", worktree,
+                             "--flow-id", "gate-unreadable-global-parent", "--tests", "pass", "--reviews", "pass")
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "blocked")
+        self.assertIn("invalid global config", report["reasons"][0])
+
+    def test_invalid_utf8_global_config_blocks_gate_decision(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["billing/"]}))
+        created = self.run_af("worktree", "create", "--repo", self.repo,
+                              "--flow-id", "gate-utf8-global")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        worktree = Path(json.loads(created.stdout)["path"])
+        started = self.run_af("state", "start", "--repo", worktree, "--flow-id", "gate-utf8-global",
+                              "--base-sha", git(worktree, "rev-parse", "HEAD"),
+                              "--config", global_config, "--chain", "tdd")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        global_config.write_bytes(b"\xff\xfe invalid utf-8")
+
+        result = self.run_af("gate", "decide", "--repo", worktree, "--flow-id", "gate-utf8-global",
+                             "--tests", "pass", "--reviews", "pass")
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "blocked")
+        self.assertIn("invalid global config", report["reasons"][0])
+
+    def test_global_baseline_asks_for_billing_but_merges_readme(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["billing/"]}))
+
+        billing = self.create_flow("gate-global-billing")
+        (billing / "billing").mkdir()
+        (billing / "billing" / "charge.py").write_text("value = 1\n")
+        committed = self.run_af("gate", "commit", "--repo", billing, "--flow-id", "gate-global-billing",
+                                "--message", "add billing change", "--paths", "billing/charge.py")
+        self.assertEqual(committed.returncode, 0, committed.stderr)
+        decision = self.run_af("gate", "decide", "--repo", billing, "--flow-id", "gate-global-billing",
+                               "--tests", "pass", "--reviews", "pass")
+        self.assertEqual(decision.returncode, 0, decision.stderr)
+        report = json.loads(decision.stdout)
+        self.assertEqual(report["decision"], "ask")
+        self.assertEqual(report["high_risk_paths"], ["billing/charge.py"])
+
+        readme = self.create_flow("gate-global-readme")
+        (readme / "README.md").write_text("documentation\n")
+        committed = self.run_af("gate", "commit", "--repo", readme, "--flow-id", "gate-global-readme",
+                                "--message", "update readme", "--paths", "README.md")
+        self.assertEqual(committed.returncode, 0, committed.stderr)
+        decision = self.run_af("gate", "decide", "--repo", readme, "--flow-id", "gate-global-readme",
+                               "--tests", "pass", "--reviews", "pass")
+        self.assertEqual(decision.returncode, 0, decision.stderr)
+        report = json.loads(decision.stdout)
+        self.assertEqual(report["decision"], "merge")
+        self.assertEqual(report["high_risk_paths"], [])
+
+    def test_global_pattern_negation_cannot_reinclude_below_ignored_directory(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        cases = (
+            ("file", ["scripts/ci*"], ["!scripts/ci-local.sh"], "merge", []),
+            ("directory", ["scripts/"], ["!scripts/ci-local.sh"], "ask", ["scripts/ci-local.sh"]),
+        )
+        for suffix, baseline, local, expected_decision, expected_paths in cases:
+            with self.subTest(suffix=suffix):
+                global_config.write_text(json.dumps({"high_risk_paths": baseline}))
+                self.config.write_text(json.dumps({"auto_merge": True, "high_risk_paths": local}))
+                flow_id = f"gate-global-negation-{suffix}"
+                worktree = self.create_flow(flow_id)
+                path = worktree / "scripts" / "ci-local.sh"
+                path.parent.mkdir()
+                path.write_text("fixture\n")
+                committed = self.run_af("gate", "commit", "--repo", worktree, "--flow-id", flow_id,
+                                        "--message", "add CI file", "--paths", "scripts/ci-local.sh")
+                self.assertEqual(committed.returncode, 0, committed.stderr)
+                decision = self.run_af("gate", "decide", "--repo", worktree, "--flow-id", flow_id,
+                                       "--tests", "pass", "--reviews", "pass")
+                self.assertEqual(decision.returncode, 0, decision.stderr)
+                report = json.loads(decision.stdout)
+                self.assertEqual(report["decision"], expected_decision)
+                self.assertEqual(report["high_risk_paths"], expected_paths)
+
+    def test_last_occurrence_dedupe_preserves_gitignore_reinclude_semantics(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["secrets/"]}))
+        self.config.write_text(json.dumps({
+            "tests": {"focused": "fake-test focused", "full": "fake-test full"},
+            "auto_merge": True, "high_risk_paths": ["!secrets/", "secrets/"]}))
+        worktree = self.create_flow("gate-reinclude")
+        (worktree / "secrets").mkdir()
+        (worktree / "secrets" / "x").write_text("fixture\n")
+        committed = self.run_af("gate", "commit", "--repo", worktree, "--flow-id", "gate-reinclude",
+                                "--message", "reincluded secrets path", "--paths", "secrets/x")
+        self.assertEqual(committed.returncode, 0, committed.stderr)
+
+        decision = self.run_af("gate", "decide", "--repo", worktree, "--flow-id", "gate-reinclude",
+                               "--tests", "pass", "--reviews", "pass")
+
+        self.assertEqual(decision.returncode, 0, decision.stderr)
+        report = json.loads(decision.stdout)
+        self.assertEqual(report["decision"], "ask")
+        self.assertEqual(report["high_risk_paths"], ["secrets/x"])
 
     def test_high_risk_checks_create_info_directory_with_custom_git_template(self):
         template = self.base / "git-template"

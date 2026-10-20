@@ -21,6 +21,7 @@ def git(cwd, *args):
 class DoctorCommandTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.home = self.base / "home"
         self.home.mkdir()
@@ -50,9 +51,6 @@ class DoctorCommandTests(unittest.TestCase):
             path.write_text("#!/bin/sh\nexit 0\n")
             path.chmod(0o755)
 
-    def tearDown(self):
-        self.temp.cleanup()
-
     def write_config(self, **extra):
         self.config.write_text(json.dumps({"skill_dirs": [str(self.skills)], **extra}))
 
@@ -71,6 +69,104 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertTrue(all(report["optional_tools"].values()))
         self.assertIn("claude", report["optional_tools"])
         self.assertTrue(report["config"]["valid"])
+
+    def test_reports_global_and_effective_high_risk_pattern_counts(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["billing/", "auth/"]}))
+        self.write_config(high_risk_paths=["auth/", "local/"])
+
+        result = self.run_af("doctor", "--repo", self.repo, "--config", self.config)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["high_risk"], {
+            "baseline_count": 2, "effective_count": 3, "warnings": []
+        })
+
+    def test_empty_high_risk_patterns_warn_without_changing_doctor_status(self):
+        self.write_config(high_risk_paths=[])
+
+        result = self.run_af("doctor", "--repo", self.repo, "--config", self.config)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["high_risk"], {
+            "baseline_count": 0,
+            "effective_count": 0,
+            "warnings": ["high_risk_paths is empty: the merge gate auto-merges every path"],
+        })
+
+    def test_invalid_global_baseline_reports_null_counts_without_warning(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text("{")
+        self.write_config(high_risk_paths=["billing/"])
+
+        result = self.run_af("doctor", "--repo", self.repo, "--config", self.config)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["config"]["valid"])
+        self.assertEqual(report["high_risk"], {
+            "baseline_count": None, "effective_count": None, "warnings": []
+        })
+
+    def test_unreadable_global_parent_reports_null_high_risk_counts(self):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root can read a mode-000 directory")
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["*"]}))
+        self.write_config(high_risk_paths=["billing/"])
+        original_mode = global_config.parent.stat().st_mode & 0o777
+        self.addCleanup(global_config.parent.chmod, original_mode)
+        global_config.parent.chmod(0)
+
+        result = self.run_af("doctor", "--repo", self.repo, "--config", self.config)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["config"]["valid"])
+        self.assertEqual(report["high_risk"], {
+            "baseline_count": None, "effective_count": None, "warnings": []
+        })
+
+    def test_broken_global_parent_symlink_reports_null_high_risk_counts(self):
+        config_dir = self.home / ".config"
+        config_dir.mkdir()
+        (config_dir / "af").symlink_to(self.base / "unmounted" / "dotfiles" / "af")
+        self.write_config(high_risk_paths=["billing/"])
+
+        result = self.run_af("doctor", "--repo", self.repo, "--config", self.config)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["config"]["valid"])
+        self.assertEqual(report["high_risk"], {
+            "baseline_count": None, "effective_count": None, "warnings": []
+        })
+
+    def test_invalid_project_config_reports_null_effective_count_without_warning(self):
+        global_config = self.home / ".config" / "af" / "af.config.json"
+        global_config.parent.mkdir(parents=True)
+        global_config.write_text(json.dumps({"high_risk_paths": ["billing/", "auth/"]}))
+        self.write_config(bogus=1)
+
+        result = self.run_af("doctor", "--repo", self.repo, "--config", self.config)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["config"]["valid"])
+        self.assertEqual(report["high_risk"], {
+            "baseline_count": 2, "effective_count": None, "warnings": []
+        })
 
     def test_missing_skill_and_invalid_config_fail(self):
         (self.skills / "retro" / "SKILL.md").unlink()
