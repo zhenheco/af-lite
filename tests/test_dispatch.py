@@ -36,6 +36,9 @@ class DispatchCommandTests(unittest.TestCase):
         self.pi_args_file = self.base / "pi-args"
         self.pi_env_file = self.base / "pi-env-names"
         self.pi_prompt_file = self.base / "pi-prompt"
+        self.claude_args_file = self.base / "claude-args"
+        self.claude_env_file = self.base / "claude-env-names"
+        self.claude_prompt_file = self.base / "claude-prompt"
         self.repo = self.base / "project"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
@@ -45,6 +48,7 @@ class DispatchCommandTests(unittest.TestCase):
         git(self.repo, "add", "README.md")
         git(self.repo, "commit", "-qm", "fixture")
         self.write_exe("pi", self.pi_script())
+        self.write_exe("claude", self.claude_script())
         self.write_exe("codex", "#!/bin/sh\necho codex-ok\n")
         created = self.run_af("worktree", "create", "--repo", self.repo,
                               "--flow-id", "dispatch-001")
@@ -75,6 +79,17 @@ class DispatchCommandTests(unittest.TestCase):
                 "  timeout) echo touched > timeout.txt; (sleep 0.6; echo late > late.txt) & echo started; sleep 10 ;;\n"
                 "  stream) echo early-out; echo early-err >&2; sleep 0.5; echo final-out ;;\n"
                 "  *) echo pi-ok ;;\n"
+                "esac\n")
+
+    def claude_script(self):
+        return ("#!/bin/sh\n"
+                f"printf '%s\\n' \"$@\" > {shlex.quote(str(self.claude_args_file))}\n"
+                f"{shlex.quote(sys.executable)} -c 'import json, os; print(json.dumps(sorted(os.environ)))' "
+                f"> {shlex.quote(str(self.claude_env_file))}\n"
+                f"cat > {shlex.quote(str(self.claude_prompt_file))}\n"
+                "case \"${FAKE_CLAUDE_MODE:-success}\" in\n"
+                "  quota) echo 'rate limit exceeded' >&2; exit 75 ;;\n"
+                "  *) echo claude-ok ;;\n"
                 "esac\n")
 
     def write_exe(self, name, body):
@@ -122,6 +137,100 @@ class DispatchCommandTests(unittest.TestCase):
                          "ROLE: You are the WRITER, started non-interactively for this worktree. "
                          "Implement directly here; do not dispatch another writer; do not ask the user; "
                          "leave changes uncommitted; never push.\n\ntools prompt")
+
+    def test_claude_tools_are_passed_and_prompt_still_arrives_on_stdin(self):
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic",
+            "tools": ["Read", "Edit", "Write", "Grep", "Glob"]}]})
+        result = self.dispatch("tools prompt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.claude_args_file.read_text().splitlines(), [
+            "-p", "--model", "writer-model",
+            "--tools", "Read,Edit,Write,Grep,Glob",
+            "--permission-mode", "acceptEdits", "--strict-mcp-config"])
+        self.assertEqual(self.claude_prompt_file.read_text(),
+                         "ROLE: You are the WRITER, started non-interactively for this worktree. "
+                         "Implement directly here; do not dispatch another writer; do not ask the user; "
+                         "leave changes uncommitted; never push.\n\ntools prompt")
+
+    def test_claude_candidate_without_tools_uses_minimal_argv_and_inherits_environment(self):
+        self.env["FAKE_DEFAULT_SENTINEL"] = "visible"
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic"}]})
+        result = self.dispatch("default prompt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.claude_args_file.read_text().splitlines(),
+                         ["-p", "--model", "writer-model"])
+        self.assertIn("FAKE_DEFAULT_SENTINEL", json.loads(self.claude_env_file.read_text()))
+        self.assertIn("default prompt", self.claude_prompt_file.read_text())
+
+    def test_claude_tools_and_env_allow_preserve_only_selected_variables_and_baseline(self):
+        self.env["ONLY_THIS"] = "allow-listed"
+        self.env["FAKE_CLOUDFLARE_API_TOKEN"] = "secret"
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic",
+            "tools": ["Read", "Edit"],
+            "env_allow": ["ONLY_THIS"]}]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.claude_args_file.read_text().splitlines(), [
+            "-p", "--model", "writer-model",
+            "--tools", "Read,Edit",
+            "--permission-mode", "acceptEdits", "--strict-mcp-config"])
+        environment_names = set(json.loads(self.claude_env_file.read_text()))
+        self.assertTrue({"PATH", "HOME", "ONLY_THIS"} <= environment_names)
+        self.assertNotIn("FAKE_CLOUDFLARE_API_TOKEN", environment_names)
+
+    def test_claude_quota_failover_runs_next_candidate(self):
+        self.env["FAKE_CLAUDE_MODE"] = "quota"
+        self.write_config({"writer": [
+            {"via": "claude", "model": "writer-model", "company": "Anthropic"},
+            {"via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI"}]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual([item["via"] for item in record["attempts"]], ["claude", "pi"])
+        self.assertEqual(record["attempts"][0]["exit_status"], 75)
+        self.assertEqual(Path(record["attempts"][-1]["log_paths"]["stdout"]).read_text(), "pi-ok\n")
+
+    def test_claude_candidate_accepts_valid_tools_and_env_allow_settings(self):
+        combinations = [
+            {},
+            {"tools": ["Read", "Edit"]},
+            {"env_allow": []},
+            {"tools": ["Read"], "env_allow": ["ONLY_THIS"]},
+        ]
+        for settings in combinations:
+            with self.subTest(settings=settings):
+                validate_config({"roles": {"writer": [{
+                    "via": "claude", "model": "writer-model",
+                    "company": "Anthropic", **settings}]}})
+
+    def test_claude_candidate_rejects_invalid_settings(self):
+        candidates = [
+            {"via": "claude", "company": "Anthropic"},
+            {"via": "claude", "model": "", "company": "Anthropic"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "provider": "openai"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "profile": "example-profile"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "unknown": "value"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "tools": []},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "tools": ["Read", "bad,name"]},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "tools": "Read"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "env_allow": ["1BAD"]},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "env_allow": "ONLY_THIS"},
+            {"via": "claude", "model": "writer-model"},
+        ]
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                validate_config({"roles": {"writer": [candidate]}})
 
     def test_env_allow_preserves_only_selected_parent_variables_and_baseline(self):
         self.env["ONLY_THIS"] = "allow-listed"

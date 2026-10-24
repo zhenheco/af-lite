@@ -85,7 +85,7 @@ def require_number(value, name, minimum, integer=False):
 def validate_config(config):
     require_object(config, "config", FIELDS)
     roles = require_object(config.get("roles", {}), "roles")
-    settings = {"pi": {"provider", "model"}, "codex": {"profile"}, "host": {"model"}}
+    settings = {"pi": {"provider", "model"}, "codex": {"profile"}, "claude": {"model"}, "host": {"model"}}
     for role, candidates in roles.items():
         if not isinstance(role, str) or not isinstance(candidates, list):
             raise ValueError("roles must map role names to candidate arrays")
@@ -95,21 +95,21 @@ def validate_config(config):
             via = candidate.get("via")
             required = settings.get(via)
             allowed = required | {"via", "company"} if required is not None else set()
-            if via == "pi":
+            if via in ("pi", "claude"):
                 allowed |= {"tools", "env_allow"}
             if required is None or set(candidate) - allowed:
-                raise ValueError(f"role {role} candidate must use pi, codex, or host settings")
+                raise ValueError(f"role {role} candidate must use pi, codex, claude, or host settings")
             if any(not isinstance(candidate.get(key), str) or not candidate[key] for key in required):
                 raise ValueError(f"role {role} candidate is missing CLI settings")
             if not isinstance(candidate.get("company"), str) or not candidate["company"].strip():
                 raise ValueError(f"role {role} candidate needs a company")
-            if via == "pi" and "tools" in candidate:
+            if via in ("pi", "claude") and "tools" in candidate:
                 tools = candidate["tools"]
                 if (not isinstance(tools, list) or not tools
                         or any(not isinstance(tool, str) or not re.fullmatch(r"[A-Za-z0-9_*:-]+", tool)
                                for tool in tools)):
                     raise ValueError(f"role {role} candidate tools must be a nonempty array of valid tool names")
-            if via == "pi" and "env_allow" in candidate:
+            if via in ("pi", "claude") and "env_allow" in candidate:
                 env_allow = candidate["env_allow"]
                 if (not isinstance(env_allow, list)
                         or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)

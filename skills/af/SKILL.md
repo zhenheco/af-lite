@@ -5,7 +5,7 @@ description: Chain Matt Pocock skills in a dedicated Git worktree with explicit 
 
 # af
 
-Use af-lite to run an ordered Matt Pocock skill flow. The skills and worker CLIs are installed separately. af-lite creates the sibling worktree, records steps, selects optional `pi` or `codex` workers or a host handoff, runs configured tests, scans host commits, and checks the final decision.
+Use af-lite to run an ordered Matt Pocock skill flow. The skills and worker CLIs are installed separately. af-lite creates the sibling worktree, records steps, selects optional `pi`, `codex`, or `claude` workers or a host handoff, runs configured tests, scans host commits, and checks the final decision.
 
 ## Start a flow
 
@@ -65,9 +65,9 @@ af state complete --repo /path/to/repository-<id> --flow-id <id> --result comple
 
 After implementation, run `code-review` against `base_sha...HEAD`. Collect findings and fix them in one writer run; ordinary repair rounds need focused tests but no repeated review. Changes matching configured high-risk paths need two reviews on every round. Run the full test suite and review any final repair diff before the gate decision.
 
-Reviewer selection prefers a different company when the role has any configured candidate from another company. Same-company review is allowed only when every candidate for that role has the writer's company. If all independent candidates stop for quota, dispatch returns `waiting_for_quota` and exits 75; wait `retry_after_minutes` and retry. A missing `pi` or `codex` CLI is skipped; `host` candidates are always available. `AF_NO_HOST=1` makes `host` candidates unavailable so a non-Claude host, or a host without quota for the configured host model, falls through to the next `pi`/`codex` candidate.
+Reviewer selection prefers a different company when the role has any configured candidate from another company. Same-company review is allowed only when every candidate for that role has the writer's company. If all independent candidates stop for quota, dispatch returns `waiting_for_quota` and exits 75; wait `retry_after_minutes` and retry. A missing `pi`, `codex`, or `claude` CLI is skipped; `host` candidates are always available. `AF_NO_HOST=1` makes `host` candidates unavailable so a non-Claude host, or a host without quota for the configured host model, falls through to the next `pi`/`codex`/`claude` candidate.
 
-`host` candidates mean the current host starts its own fresh subagent, so when the host differs from the one the config's `host` models belong to (for example, Pi or Codex with Claude models), use a config whose `host` entries match that host, or list `pi`/`codex` reviewer candidates instead.
+`host` candidates mean the current host starts its own fresh subagent, so when the host differs from the one the config's `host` models belong to (for example, Pi or Codex with Claude models), use a config whose `host` entries match that host, or list `pi`/`codex`/`claude` reviewer candidates instead.
 
 ```sh
 af select --repo /path/to/repository-<id> --flow-id <id> --role small_review --writer-company <writer-company>
@@ -87,7 +87,7 @@ Only continue to the project's normal PR process when the decision is `merge`. A
 
 Config resolves from `--config`, `$AF_CONFIG`, the primary checkout's `af.config.json`, then `~/.config/af/af.config.json`. Any resolved config path inside a linked worktree on an `af/*` branch is refused. `state start` records the resolved config path.
 
-Pi candidates may set `tools` to a non-empty list passed to Pi with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. `env_allow` may be empty and keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, but not credential files on disk or Pi's own credential file.
+Pi candidates may set `tools` to a non-empty list passed to Pi with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. On Claude candidates, `tools` removes the shell tool (the CLI is started with `--tools`, `--permission-mode acceptEdits` and `--strict-mcp-config`), but af passes no flag that turns off user or project settings or hooks, so hooks and settings `env` entries still apply, and the file tools are not confined to the worktree. `env_allow` may be empty and keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, but not credential files on disk or Pi's own credential file. Claude Code CLI candidates use `model` and accept the same optional `tools` (passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`) and `env_allow`.
 
 ```sh
 af state status --repo /path/to/repository-<id> --flow-id <id>
