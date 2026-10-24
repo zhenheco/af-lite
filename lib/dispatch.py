@@ -47,18 +47,23 @@ def invoke(candidate, worktree, prompt, timeout, paths):
         command = ["pi", "--print", "--provider", candidate["provider"], "--model", candidate["model"]]
         if "tools" in candidate:
             command.extend(["--tools", ",".join(candidate["tools"]), "--no-mcp"])
-        if "env_allow" in candidate:
-            allowed_environment = {
-                "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL",
-                "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
-                "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
-                *candidate["env_allow"],
-            }
-            environment = {name: value for name, value in os.environ.items()
-                           if name in allowed_environment}
+    elif candidate["via"] == "claude":
+        command = ["claude", "-p", "--model", candidate["model"]]
+        if "tools" in candidate:
+            command.extend(["--tools", ",".join(candidate["tools"]),
+                            "--permission-mode", "acceptEdits", "--strict-mcp-config"])
     else:
         command = ["codex", "exec", "-p", candidate["profile"], "-s", "workspace-write",
                    "-C", str(worktree), "-"]
+    if candidate["via"] in ("pi", "claude") and "env_allow" in candidate:
+        allowed_environment = {
+            "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL",
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+            "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+            *candidate["env_allow"],
+        }
+        environment = {name: value for name, value in os.environ.items()
+                       if name in allowed_environment}
 
     with Path(paths["stdout"]).open("w") as stdout, Path(paths["stderr"]).open("w") as stderr:
         process = subprocess.Popen(command, cwd=worktree, stdin=subprocess.PIPE, text=True,

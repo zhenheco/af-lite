@@ -45,7 +45,7 @@ class DoctorCommandTests(unittest.TestCase):
             path.write_text(f"---\nname: {name}\ndescription: test\n---\n")
         self.config = self.base / "af.config.json"
         self.write_config()
-        for name in ("pi", "codex", "gh", "gitleaks"):
+        for name in ("pi", "codex", "gh", "gitleaks", "claude"):
             path = self.bin / name
             path.write_text("#!/bin/sh\nexit 0\n")
             path.chmod(0o755)
@@ -69,6 +69,7 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertEqual(report["skills"]["found"], list(REQUIRED_SKILLS))
         self.assertEqual(report["skills"]["missing"], [])
         self.assertTrue(all(report["optional_tools"].values()))
+        self.assertIn("claude", report["optional_tools"])
         self.assertTrue(report["config"]["valid"])
 
     def test_missing_skill_and_invalid_config_fail(self):

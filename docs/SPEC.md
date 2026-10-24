@@ -16,12 +16,12 @@ Workers are trusted but fallible: they are the owner's coding agents working in 
 
 ## Selection and dispatch
 
-- Each role has ordered `pi`, `codex`, or `host` candidates. Candidates with a missing `pi` or `codex` CLI are skipped; a `host` candidate with `model` and `company` is always available.
+- Each role has ordered `pi`, `codex`, `claude`, or `host` candidates. Candidates with a missing `pi`, `codex`, or `claude` CLI are skipped; a `host` candidate with `model` and `company` is always available.
 - `dispatch` takes `--worktree`, with `--repo` accepted as an alias for consistency with the other commands; passing both with different values is an error. It always uses the config recorded by `state start` and rejects `--config`.
-- `AF_NO_HOST=1` makes `host` candidates unavailable so a non-Claude host, or a host without quota for the configured host model, falls through to the next `pi`/`codex` candidate.
+- `AF_NO_HOST=1` makes `host` candidates unavailable so a non-Claude host, or a host without quota for the configured host model, falls through to the next `pi`/`codex`/`claude` candidate.
 - Reviewer roles require a known company different from the writer's when the role has any candidate from a different company. Same-company review is allowed only when every configured candidate has the writer's company. If every independent reviewer is quota-exhausted, dispatch emits `waiting_for_quota` and exits 75.
 - A selected `host` candidate starts no process. `dispatch` returns JSON with `via`, `role`, `model`, `company`, `worktree`, the prompt with its `ROLE` or `REVIEWER` preamble, the instruction to start a fresh host subagent, and `attempts`. Quota failover may select a host candidate unless `AF_NO_HOST=1`.
-- Every CLI worker receives a fixed role preamble and the task on stdin. Codex runs as `codex exec -p <profile> -s workspace-write -C <worktree> -`; Pi also receives the prompt on stdin. stdout and stderr stream to `.af/logs/<flow-id>/` under the Git common directory. Timeout kills the worker process group.
+- Every CLI worker receives a fixed role preamble and the task on stdin. Codex runs as `codex exec -p <profile> -s workspace-write -C <worktree> -`; Claude runs as `claude -p --model <model>` with optional `--tools ... --permission-mode acceptEdits --strict-mcp-config`; Pi and Claude also receive the prompt on stdin. stdout and stderr stream to `.af/logs/<flow-id>/` under the Git common directory. Timeout kills the worker process group.
 - Quota stops are configured exit statuses or case-insensitive stderr patterns after removing the prompt. Failover is allowed only when both `HEAD` and `git status --porcelain=v1 -z --ignored` are unchanged. A worker-created commit is soft-reset to the attempt's starting commit and reported.
 
 ## Gates
@@ -36,7 +36,7 @@ Unknown fields are rejected. Supported fields are:
 
 | Field | Use |
 |---|---|
-| `roles` | Ordered candidates. Candidate keys: `via`, `company`, and `provider` plus `model` for Pi or `profile` for Codex. Pi also accepts optional `tools` and `env_allow`. |
+| `roles` | Ordered candidates. Candidate keys: `via`, `company`, and `provider` plus `model` for Pi, `profile` for Codex, or `model` for Claude and host. Pi also accepts optional `tools` and `env_allow`; Claude accepts the same, with `tools` passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`. |
 | `quota_stop.exit_statuses`, `quota_stop.patterns` | Quota exit codes and stderr regex patterns. |
 | `quota_retry_minutes` | Retry delay reported when eligible candidates are quota-exhausted. |
 | `worker_timeout_minutes`, `test_timeout_minutes` | Worker and test timeouts. |
@@ -47,7 +47,7 @@ Unknown fields are rejected. Supported fields are:
 | `tests.focused`, `tests.full` | Shell command strings. |
 | `record_retention.archive_after_days`, `record_retention.archive_dir`, `record_retention.delete_after_days` | Archive and deletion ages and destination for completed or stopped flow records and logs. |
 
-For Pi candidates, `tools` is a non-empty tool list passed with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. `env_allow` may be empty; it keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, not credential files on disk or Pi's own credential file.
+For Pi candidates, `tools` is a non-empty tool list passed with MCP disabled. Without a shell tool, the worker cannot run `wrangler`, `gh`, `git`, or `curl`; Pi's `write` and `edit` tools are not path-confined. On Claude candidates, `tools` removes the shell tool (the CLI is started with `--tools`, `--permission-mode acceptEdits` and `--strict-mcp-config`), but af passes no flag that turns off user or project settings or hooks, so hooks and settings `env` entries still apply, and the file tools are not confined to the worktree. `env_allow` may be empty; it keeps standard runtime, locale, proxy, and CA variables plus listed names set in the parent. It removes tokens from the environment, not credential files on disk or Pi's own credential file.
 
 Defaults and field details are in the root [README](../README.md) and [example config](../af.config.example.json).
 
