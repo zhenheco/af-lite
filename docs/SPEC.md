@@ -36,7 +36,7 @@ Unknown fields are rejected. Supported fields are:
 
 | Field | Use |
 |---|---|
-| `roles` | Ordered candidates. Candidate keys: `via`, `company`, and `provider` plus `model` for Pi, `profile` for Codex, or `model` for Claude and host. Pi also accepts optional `tools` and `env_allow`; Claude accepts the same, with `tools` passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`. |
+| `roles` | Ordered candidates. Candidate keys: `via`, `company`, and `provider` plus `model` for Pi, `profile` for Codex, or `model` for Claude and host. Pi also accepts optional `tools` and `env_allow`; Claude accepts the same, with `tools` passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`. Claude also accepts `base_url` plus `api_key_command` (both required together, `https://` only), which point the Claude CLI at another vendor's Anthropic-compatible endpoint: af then starts `claude --bare` (which skips user and project settings and hooks), runs the command for the key, passes it as `ANTHROPIC_API_KEY` with `ANTHROPIC_BASE_URL`, and removes `ANTHROPIC_AUTH_TOKEN`; a failed or empty key command fails the attempt without starting the CLI. |
 | `quota_stop.exit_statuses`, `quota_stop.patterns` | Quota exit codes and stderr regex patterns. |
 | `quota_retry_minutes` | Retry delay reported when eligible candidates are quota-exhausted. |
 | `worker_timeout_minutes`, `test_timeout_minutes` | Worker and test timeouts. |

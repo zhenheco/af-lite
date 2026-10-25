@@ -41,20 +41,22 @@ def create_log_paths(root, flow_id, role, attempt):
     return {"stdout": str(folder / f"{stem}.out.log"),
             "stderr": str(folder / f"{stem}.err.log")}
 
+def resolve_api_key(candidate, worktree, environment, paths):
+    try:
+        result = subprocess.run(candidate["api_key_command"], shell=True, cwd=worktree,
+                                capture_output=True, text=True, env=environment, timeout=60)
+        status, key = result.returncode, result.stdout.strip() if result.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        status, key = "timeout", ""
+    if key:
+        return key, None
+    text = f"api_key_command failed (exit {status})\n"
+    Path(paths["stdout"]).touch()
+    Path(paths["stderr"]).write_text(text)
+    return None, (1, text, False)
+
 def invoke(candidate, worktree, prompt, timeout, paths):
     environment = None
-    if candidate["via"] == "pi":
-        command = ["pi", "--print", "--provider", candidate["provider"], "--model", candidate["model"]]
-        if "tools" in candidate:
-            command.extend(["--tools", ",".join(candidate["tools"]), "--no-mcp"])
-    elif candidate["via"] == "claude":
-        command = ["claude", "-p", "--model", candidate["model"]]
-        if "tools" in candidate:
-            command.extend(["--tools", ",".join(candidate["tools"]),
-                            "--permission-mode", "acceptEdits", "--strict-mcp-config"])
-    else:
-        command = ["codex", "exec", "-p", candidate["profile"], "-s", "workspace-write",
-                   "-C", str(worktree), "-"]
     if candidate["via"] in ("pi", "claude") and "env_allow" in candidate:
         allowed_environment = {
             "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL",
@@ -64,6 +66,27 @@ def invoke(candidate, worktree, prompt, timeout, paths):
         }
         environment = {name: value for name, value in os.environ.items()
                        if name in allowed_environment}
+    if candidate["via"] == "pi":
+        command = ["pi", "--print", "--provider", candidate["provider"], "--model", candidate["model"]]
+        if "tools" in candidate:
+            command.extend(["--tools", ",".join(candidate["tools"]), "--no-mcp"])
+    elif candidate["via"] == "claude":
+        command = ["claude", "-p", "--model", candidate["model"]]
+        if "base_url" in candidate:
+            key, failure = resolve_api_key(candidate, worktree, environment, paths)
+            if failure:
+                return failure
+            command.insert(1, "--bare")
+            environment = dict(environment) if environment is not None else dict(os.environ)
+            environment["ANTHROPIC_BASE_URL"] = candidate["base_url"]
+            environment["ANTHROPIC_API_KEY"] = key
+            environment.pop("ANTHROPIC_AUTH_TOKEN", None)
+        if "tools" in candidate:
+            command.extend(["--tools", ",".join(candidate["tools"]),
+                            "--permission-mode", "acceptEdits", "--strict-mcp-config"])
+    else:
+        command = ["codex", "exec", "-p", candidate["profile"], "-s", "workspace-write",
+                   "-C", str(worktree), "-"]
 
     with Path(paths["stdout"]).open("w") as stdout, Path(paths["stderr"]).open("w") as stderr:
         process = subprocess.Popen(command, cwd=worktree, stdin=subprocess.PIPE, text=True,

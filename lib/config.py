@@ -97,6 +97,8 @@ def validate_config(config):
             allowed = required | {"via", "company"} if required is not None else set()
             if via in ("pi", "claude"):
                 allowed |= {"tools", "env_allow"}
+            if via == "claude":
+                allowed |= {"base_url", "api_key_command"}
             if required is None or set(candidate) - allowed:
                 raise ValueError(f"role {role} candidate must use pi, codex, claude, or host settings")
             if any(not isinstance(candidate.get(key), str) or not candidate[key] for key in required):
@@ -115,6 +117,18 @@ def validate_config(config):
                         or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
                                 for name in env_allow)):
                     raise ValueError(f"role {role} candidate env_allow must be an array of valid environment names")
+            if via == "claude":
+                has_base_url = "base_url" in candidate
+                has_api_key_command = "api_key_command" in candidate
+                if has_base_url != has_api_key_command:
+                    raise ValueError(f"role {role} candidate base_url and api_key_command must appear together")
+                if has_base_url:
+                    base_url = candidate["base_url"]
+                    if not isinstance(base_url, str) or not base_url.startswith("https://"):
+                        raise ValueError(f"role {role} candidate base_url must be an https:// URL")
+                    api_key_command = candidate["api_key_command"]
+                    if not isinstance(api_key_command, str) or not api_key_command:
+                        raise ValueError(f"role {role} candidate api_key_command must be a nonempty string")
 
     for field in ("skill_dirs", "high_risk_paths"):
         if field in config:

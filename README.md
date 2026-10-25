@@ -67,7 +67,7 @@ Unknown config fields are rejected. These are exactly the supported fields:
 
 | Field | Meaning |
 |---|---|
-| `roles` | Ordered candidates for each role. Each candidate uses `via` (`pi`, `codex`, `claude`, or `host`) and `company`; Pi uses `provider` plus `model`, Codex uses `profile`, Claude Code CLI uses `model`, and host uses `model`. Pi also accepts optional `tools` and `env_allow` candidate settings; Claude accepts the same, with `tools` passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`. |
+| `roles` | Ordered candidates for each role. Each candidate uses `via` (`pi`, `codex`, `claude`, or `host`) and `company`; Pi uses `provider` plus `model`, Codex uses `profile`, Claude Code CLI uses `model`, and host uses `model`. Pi also accepts optional `tools` and `env_allow` candidate settings; Claude accepts the same, with `tools` passed as `--tools ... --permission-mode acceptEdits --strict-mcp-config`. Claude also accepts `base_url` plus `api_key_command` (both required together, `https://` only), which point the Claude CLI at another vendor's Anthropic-compatible endpoint: af then starts `claude --bare` (which skips user and project settings and hooks), runs the command for the key, passes it as `ANTHROPIC_API_KEY` with `ANTHROPIC_BASE_URL`, and removes `ANTHROPIC_AUTH_TOKEN`; a failed or empty key command fails the attempt without starting the CLI. |
 | `quota_stop.exit_statuses` | Worker exit statuses treated as quota stops; default: `[75]`. |
 | `quota_stop.patterns` | Case-insensitive regexes matched against worker stderr after removing the prompt; no text patterns are enabled by default. |
 | `quota_retry_minutes` | Delay to report when all candidates stop for quota; default: `15`. |

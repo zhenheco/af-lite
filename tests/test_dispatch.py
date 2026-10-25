@@ -39,6 +39,7 @@ class DispatchCommandTests(unittest.TestCase):
         self.claude_args_file = self.base / "claude-args"
         self.claude_env_file = self.base / "claude-env-names"
         self.claude_prompt_file = self.base / "claude-prompt"
+        self.claude_env_values_file = self.base / "claude-env-values"
         self.repo = self.base / "project"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
@@ -86,6 +87,11 @@ class DispatchCommandTests(unittest.TestCase):
                 f"printf '%s\\n' \"$@\" > {shlex.quote(str(self.claude_args_file))}\n"
                 f"{shlex.quote(sys.executable)} -c 'import json, os; print(json.dumps(sorted(os.environ)))' "
                 f"> {shlex.quote(str(self.claude_env_file))}\n"
+                f"{shlex.quote(sys.executable)} -c 'import json, os; "
+                "print(json.dumps({\"ANTHROPIC_BASE_URL\": os.environ.get(\"ANTHROPIC_BASE_URL\"), "
+                "\"ANTHROPIC_API_KEY\": os.environ.get(\"ANTHROPIC_API_KEY\"), "
+                "\"ANTHROPIC_AUTH_TOKEN_SET\": \"ANTHROPIC_AUTH_TOKEN\" in os.environ}))' "
+                f"> {shlex.quote(str(self.claude_env_values_file))}\n"
                 f"cat > {shlex.quote(str(self.claude_prompt_file))}\n"
                 "case \"${FAKE_CLAUDE_MODE:-success}\" in\n"
                 "  quota) echo 'rate limit exceeded' >&2; exit 75 ;;\n"
@@ -227,6 +233,126 @@ class DispatchCommandTests(unittest.TestCase):
             {"via": "claude", "model": "writer-model", "company": "Anthropic",
              "env_allow": "ONLY_THIS"},
             {"via": "claude", "model": "writer-model"},
+        ]
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                validate_config({"roles": {"writer": [candidate]}})
+
+    def test_claude_base_url_runs_api_key_command_and_sets_anthropic_environment(self):
+        self.env["ANTHROPIC_AUTH_TOKEN"] = "parent-token"
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic",
+            "base_url": "https://api.example.invalid/anthropic",
+            "api_key_command": "printf 'fake-key-123\\n'",
+            "tools": ["Read", "Edit"]}]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.claude_args_file.read_text().splitlines(), [
+            "--bare", "-p", "--model", "writer-model",
+            "--tools", "Read,Edit",
+            "--permission-mode", "acceptEdits", "--strict-mcp-config"])
+        values = json.loads(self.claude_env_values_file.read_text())
+        self.assertEqual(values["ANTHROPIC_BASE_URL"], "https://api.example.invalid/anthropic")
+        self.assertEqual(values["ANTHROPIC_API_KEY"], "fake-key-123")
+        self.assertFalse(values["ANTHROPIC_AUTH_TOKEN_SET"])
+        self.assertNotIn("fake-key-123", result.stdout)
+        log_paths = json.loads(result.stdout)["attempts"][0]["log_paths"]
+        self.assertNotIn("fake-key-123", Path(log_paths["stdout"]).read_text())
+        self.assertNotIn("fake-key-123", Path(log_paths["stderr"]).read_text())
+
+    def test_claude_base_url_with_env_allow_scrubs_parent_but_keeps_anthropic_variables(self):
+        self.env["FAKE_CLOUDFLARE_API_TOKEN"] = "secret"
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic",
+            "base_url": "https://api.example.invalid/anthropic",
+            "api_key_command": "printf 'fake-key-123\\n'",
+            "env_allow": []}]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment_names = set(json.loads(self.claude_env_file.read_text()))
+        self.assertTrue({"PATH", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"} <= environment_names)
+        self.assertNotIn("FAKE_CLOUDFLARE_API_TOKEN", environment_names)
+
+    def test_claude_base_url_api_key_command_failure_skips_claude(self):
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic",
+            "base_url": "https://api.example.invalid/anthropic",
+            "api_key_command": "exit 3"}]})
+        result = self.dispatch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.claude_args_file.exists())
+        record = json.loads(result.stdout)
+        self.assertEqual(len(record["attempts"]), 1)
+        self.assertEqual(record["attempts"][0]["exit_status"], 1)
+        stderr_log = Path(record["attempts"][0]["log_paths"]["stderr"]).read_text()
+        self.assertIn("api_key_command failed", stderr_log)
+
+    def test_claude_base_url_empty_api_key_skips_claude(self):
+        self.write_config({"writer": [{
+            "via": "claude", "model": "writer-model", "company": "Anthropic",
+            "base_url": "https://api.example.invalid/anthropic",
+            "api_key_command": "true"}]})
+        result = self.dispatch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.claude_args_file.exists())
+        record = json.loads(result.stdout)
+        self.assertEqual(len(record["attempts"]), 1)
+        self.assertEqual(record["attempts"][0]["exit_status"], 1)
+        stderr_log = Path(record["attempts"][0]["log_paths"]["stderr"]).read_text()
+        self.assertIn("api_key_command failed", stderr_log)
+
+    def test_claude_candidate_accepts_base_url_settings(self):
+        combinations = [
+            {"base_url": "https://api.example.invalid/anthropic",
+             "api_key_command": "printf k"},
+            {"base_url": "https://api.example.invalid/anthropic",
+             "api_key_command": "printf k", "tools": ["Read", "Edit"]},
+            {"base_url": "https://api.example.invalid/anthropic",
+             "api_key_command": "printf k", "env_allow": []},
+            {"base_url": "https://api.example.invalid/anthropic",
+             "api_key_command": "printf k", "tools": ["Read"], "env_allow": ["ONLY_THIS"]},
+        ]
+        for settings in combinations:
+            with self.subTest(settings=settings):
+                validate_config({"roles": {"writer": [{
+                    "via": "claude", "model": "writer-model",
+                    "company": "Anthropic", **settings}]}})
+
+    def test_claude_candidate_rejects_invalid_base_url_settings(self):
+        candidates = [
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": "https://api.example.invalid/anthropic"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "api_key_command": "printf k"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": "http://insecure.example.invalid", "api_key_command": "printf k"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": "", "api_key_command": "printf k"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": "https://api.example.invalid/anthropic", "api_key_command": ""},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": 123, "api_key_command": "printf k"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": "https://api.example.invalid/anthropic", "api_key_command": ["printf k"]},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": None, "api_key_command": None},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": None, "api_key_command": "printf k"},
+            {"via": "claude", "model": "writer-model", "company": "Anthropic",
+             "base_url": "https://api.example.invalid/anthropic", "api_key_command": None},
+        ]
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                validate_config({"roles": {"writer": [candidate]}})
+
+    def test_base_url_settings_are_rejected_on_non_claude_candidates(self):
+        candidates = [
+            {"via": "pi", "provider": "openai", "model": "writer", "company": "OpenAI",
+             "base_url": "https://api.example.invalid/anthropic", "api_key_command": "printf k"},
+            {"via": "codex", "profile": "example-profile", "company": "OpenAI",
+             "base_url": "https://api.example.invalid/anthropic", "api_key_command": "printf k"},
+            {"via": "host", "model": "writer", "company": "OpenAI",
+             "base_url": "https://api.example.invalid/anthropic", "api_key_command": "printf k"},
         ]
         for candidate in candidates:
             with self.subTest(candidate=candidate), self.assertRaises(ValueError):
