@@ -18,6 +18,8 @@ WRITER_ROLE = ("ROLE: You are the WRITER, started non-interactively for this wor
                "do not dispatch another writer; do not ask the user; leave changes uncommitted; never push.")
 REVIEWER_ROLE = ("ROLE: You are the REVIEWER, started non-interactively for this worktree. Review the requested "
                  "changes only; do not edit files; do not commit; do not push; do not ask the user.")
+BUILTIN_QUOTA_PATTERNS = ("usage limit", "quota will reset", "rate limit exceeded",
+                          "429 too many requests", "insufficient_quota", "quota exceeded")
 
 def validate_worktree(path, flow_id):
     root = Path(git(path, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
@@ -119,7 +121,12 @@ def quota_stop(exit_status, stderr, config, prompt):
     if exit_status in settings.get("exit_statuses", [75]):
         return True
     stderr = stderr.replace(prompt, "")
-    return any(re.search(pattern, stderr, re.IGNORECASE) for pattern in settings.get("patterns", []))
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    builtin_stderr = "\n".join(lines[-20:])
+    builtins_match = any(re.search(pattern, builtin_stderr, re.IGNORECASE)
+                         for pattern in BUILTIN_QUOTA_PATTERNS)
+    return builtins_match or any(re.search(pattern, stderr, re.IGNORECASE)
+                                 for pattern in settings.get("patterns", []))
 
 def head_and_status(worktree):
     head = git(worktree, "rev-parse", "HEAD").stdout.strip()

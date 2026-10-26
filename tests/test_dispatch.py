@@ -75,8 +75,13 @@ class DispatchCommandTests(unittest.TestCase):
                 "  quota) echo 'rate limit exceeded' >&2; exit 75 ;;\n"
                 "  change-quota) echo changed > changed.txt; echo 'quota exceeded' >&2; exit 75 ;;\n"
                 "  commit-quota) git commit --allow-empty -qm worker; echo 'quota exceeded' >&2; exit 75 ;;\n"
-                "  stderr-quota) echo 'RATE LIMIT EXCEEDED' >&2; exit 1 ;;\n"
-                "  prompt-echo) cat >&2; echo 'rate limit exceeded'; exit 1 ;;\n"
+                "  stderr-custom-quota) echo 'CUSTOM PROVIDER CAPACITY STOP' >&2; exit 1 ;;\n"
+                f"  prompt-echo) cat {shlex.quote(str(self.pi_prompt_file))} >&2; echo 'rate limit exceeded'; exit 1 ;;\n"
+                f"  real-quota) echo \"You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.\" >&2; exit 1 ;;\n"
+                "  usage-limit) echo \"You've hit your usage limit\" >&2; exit 1 ;;\n"
+                "  ordinary-error) echo 'fatal: something broke' >&2; exit 1 ;;\n"
+                f"  prompt-echo-ordinary-error) cat {shlex.quote(str(self.pi_prompt_file))} >&2; echo 'fatal: something broke' >&2; exit 1 ;;\n"
+                "  builtin-phrase-early) echo 'reading README: built-in patterns include usage limit and quota will reset' >&2; i=0; while [ \"$i\" -lt 30 ]; do echo \"diagnostic $i\" >&2; i=$((i + 1)); done; echo 'fatal: something broke' >&2; exit 1 ;;\n"
                 "  timeout) echo touched > timeout.txt; (sleep 0.6; echo late > late.txt) & echo started; sleep 10 ;;\n"
                 "  stream) echo early-out; echo early-err >&2; sleep 0.5; echo final-out ;;\n"
                 "  *) echo pi-ok ;;\n"
@@ -562,20 +567,94 @@ class DispatchCommandTests(unittest.TestCase):
         self.env["FAKE_PI_MODE"] = "prompt-echo"
         result = self.dispatch("rate limit exceeded")
         self.assertEqual(result.returncode, 1)
+        attempt = json.loads(result.stdout)["attempts"][0]
+        self.assertIn("rate limit exceeded", Path(attempt["log_paths"]["stderr"]).read_text())
+        self.assertIn("rate limit exceeded", Path(attempt["log_paths"]["stdout"]).read_text())
         self.assertNotEqual(json.loads(result.stdout).get("status"), "waiting_for_quota")
 
-        self.env["FAKE_PI_MODE"] = "stderr-quota"
-        self.write_config(quota_stop={"exit_statuses": [], "patterns": ["rate limit exceeded"]})
+        self.env["FAKE_PI_MODE"] = "stderr-custom-quota"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": ["custom provider capacity stop"]})
         retried = self.dispatch()
         self.assertEqual(retried.returncode, 0, retried.stderr)
         self.assertEqual([item["via"] for item in json.loads(retried.stdout)["attempts"]], ["pi", "codex"])
 
-    def test_unconfigured_quota_patterns_do_not_trigger_failover(self):
-        self.env["FAKE_PI_MODE"] = "stderr-quota"
+    def test_unconfigured_custom_quota_pattern_does_not_trigger_failover(self):
+        self.env["FAKE_PI_MODE"] = "stderr-custom-quota"
         self.write_config(quota_stop={"exit_statuses": []})
         result = self.dispatch()
         self.assertEqual(result.returncode, 1)
         self.assertEqual([item["via"] for item in json.loads(result.stdout)["attempts"]], ["pi"])
+
+    def test_builtin_real_quota_message_fails_over_with_empty_configured_patterns(self):
+        self.env["FAKE_PI_MODE"] = "real-quota"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": []})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attempts = json.loads(result.stdout)["attempts"]
+        self.assertEqual(Path(attempts[0]["log_paths"]["stderr"]).read_text().splitlines()[-1],
+                         "You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.")
+        self.assertEqual([(item["via"], item["exit_status"]) for item in attempts],
+                         [("pi", 1), ("codex", 0)])
+        self.assertEqual(Path(attempts[1]["log_paths"]["stdout"]).read_text(), "codex-ok\n")
+
+    def test_builtin_quota_message_fails_over_with_nonmatching_configured_pattern(self):
+        self.env["FAKE_PI_MODE"] = "real-quota"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": ["quota exceeded custom"]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([item["via"] for item in json.loads(result.stdout)["attempts"]], ["pi", "codex"])
+
+    def test_builtin_real_quota_message_fails_over_without_quota_stop_config(self):
+        self.env["FAKE_PI_MODE"] = "real-quota"
+        config = json.loads(self.config.read_text())
+        del config["quota_stop"]
+        self.config.write_text(json.dumps(config))
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attempts = json.loads(result.stdout)["attempts"]
+        self.assertEqual([(item["via"], item["exit_status"]) for item in attempts],
+                         [("pi", 1), ("codex", 0)])
+
+    def test_builtin_usage_limit_message_fails_over(self):
+        self.env["FAKE_PI_MODE"] = "usage-limit"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": []})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attempts = json.loads(result.stdout)["attempts"]
+        self.assertEqual([(item["via"], item["exit_status"]) for item in attempts],
+                         [("pi", 1), ("codex", 0)])
+
+    def test_ordinary_worker_error_does_not_fail_over(self):
+        self.env["FAKE_PI_MODE"] = "ordinary-error"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": []})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 1)
+        attempts = json.loads(result.stdout)["attempts"]
+        self.assertEqual([(item["via"], item["exit_status"]) for item in attempts], [("pi", 1)])
+
+    def test_prompt_echo_with_usage_limit_does_not_fail_over(self):
+        self.env["FAKE_PI_MODE"] = "prompt-echo-ordinary-error"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": []})
+        result = self.dispatch("please honor the usage limit in this task")
+        self.assertEqual(result.returncode, 1)
+        attempts = json.loads(result.stdout)["attempts"]
+        self.assertEqual([(item["via"], item["exit_status"]) for item in attempts], [("pi", 1)])
+        self.assertIn("please honor the usage limit in this task",
+                      Path(attempts[0]["log_paths"]["stderr"]).read_text())
+
+    def test_builtin_quota_phrase_early_in_stderr_does_not_fail_over(self):
+        self.env["FAKE_PI_MODE"] = "builtin-phrase-early"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": []})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual([item["via"] for item in json.loads(result.stdout)["attempts"]], ["pi"])
+
+    def test_configured_quota_pattern_still_matches_early_stderr(self):
+        self.env["FAKE_PI_MODE"] = "builtin-phrase-early"
+        self.write_config(quota_stop={"exit_statuses": [], "patterns": ["reading README"]})
+        result = self.dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([item["via"] for item in json.loads(result.stdout)["attempts"]], ["pi", "codex"])
 
     def test_worker_output_streams_into_flow_logs(self):
         self.env["FAKE_PI_MODE"] = "stream"
